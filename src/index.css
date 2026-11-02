@@ -1,0 +1,8 @@
+@import "tailwindcss";
+
+@layer base {
+  body {
+    @apply bg-[#f8f7f4] text-[#1a1816] antialiased selection:bg-[#1a1816] selection:text-[#f8f7f4] min-h-screen;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+  }
+}
