@@ -492,8 +492,27 @@ export default function App() {
       if (res.ok) {
         const data = await res.json()
         if (data.bookmarks) {
-          setBookmarks(data.bookmarks)
-          localStorage.setItem('tmdb_movie_bookmarks', JSON.stringify(data.bookmarks))
+          const saved = localStorage.getItem('tmdb_movie_bookmarks')
+          let savedByTitle = new Map<string, MovieCatalogItem>()
+          if (saved) {
+            try {
+              savedByTitle = new Map(
+                (JSON.parse(saved) as MovieCatalogItem[]).map((movie) => [movie.title.toLowerCase(), movie])
+              )
+            } catch {
+              // Ignore malformed local data and use the API response.
+            }
+          }
+          const mergedBookmarks = (data.bookmarks as MovieCatalogItem[]).map((movie) => {
+            const localMovie = savedByTitle.get(movie.title.toLowerCase())
+            return {
+              ...movie,
+              tagline: movie.tagline || localMovie?.tagline,
+              overview: movie.overview || localMovie?.overview,
+            }
+          })
+          setBookmarks(mergedBookmarks)
+          localStorage.setItem('tmdb_movie_bookmarks', JSON.stringify(mergedBookmarks))
           return
         }
       }

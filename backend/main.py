@@ -305,9 +305,17 @@ def init_bookmarks_table():
                 poster_url TEXT,
                 vote_average REAL,
                 original_language TEXT,
+                tagline TEXT,
+                overview TEXT,
                 added_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )
         """)
+        # Add fields to existing databases created before bookmark details were stored.
+        c.execute("PRAGMA table_info(bookmarked_movies)")
+        columns = {row[1] for row in c.fetchall()}
+        for column in ("tagline", "overview"):
+            if column not in columns:
+                c.execute(f"ALTER TABLE bookmarked_movies ADD COLUMN {column} TEXT")
         conn.commit()
         conn.close()
     except Exception as e:
@@ -323,6 +331,8 @@ class BookmarkPayload(BaseModel):
     poster_url: Optional[str] = None
     vote_average: Optional[float] = None
     original_language: Optional[str] = "en"
+    tagline: Optional[str] = None
+    overview: Optional[str] = None
 
 @app.get("/api/bookmarks")
 def get_bookmarks():
@@ -345,6 +355,8 @@ def get_bookmarks():
                 "poster_url": r["poster_url"],
                 "vote_average": r["vote_average"],
                 "original_language": r["original_language"],
+                "tagline": r["tagline"],
+                "overview": r["overview"],
                 "added_at": r["added_at"],
             })
         conn.close()
@@ -361,15 +373,18 @@ def add_bookmark(item: BookmarkPayload):
         c = conn.cursor()
         genres_str = ", ".join(item.genres) if item.genres else ""
         c.execute("""
-            INSERT INTO bookmarked_movies (title, release_year, runtime, genres, poster_url, vote_average, original_language)
-            VALUES (?, ?, ?, ?, ?, ?, ?)
+            INSERT INTO bookmarked_movies (title, release_year, runtime, genres, poster_url, vote_average, original_language, tagline, overview)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(title) DO UPDATE SET
                 release_year=excluded.release_year,
                 runtime=excluded.runtime,
                 genres=excluded.genres,
                 poster_url=excluded.poster_url,
-                original_language=excluded.original_language
-        """, (item.title, item.release_year, item.runtime, genres_str, item.poster_url, item.vote_average, item.original_language))
+                vote_average=excluded.vote_average,
+                original_language=excluded.original_language,
+                tagline=excluded.tagline,
+                overview=excluded.overview
+        """, (item.title, item.release_year, item.runtime, genres_str, item.poster_url, item.vote_average, item.original_language, item.tagline, item.overview))
         conn.commit()
         conn.close()
         return {"status": "success", "message": f"'{item.title}' bookmarked successfully"}
