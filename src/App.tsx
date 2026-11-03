@@ -12,7 +12,10 @@ import {
   ChevronDown,
   ChevronUp,
   ChevronLeft,
-  ChevronRight
+  ChevronRight,
+  Heart,
+  Trash2,
+  X
 } from 'lucide-react'
 
 interface MovieCatalogItem {
@@ -29,6 +32,7 @@ interface MovieCatalogItem {
   poster_path?: string
   poster_url?: string | null
   backdrop_url?: string | null
+  vote_average?: number
 }
 
 interface PredictionResult {
@@ -478,6 +482,81 @@ export default function App() {
   const [isProcessingDataset, setIsProcessingDataset] = useState(false)
   const [result, setResult] = useState<PredictionResult | null>(null)
 
+  // Bookmarks / Watchlist state
+  const [bookmarks, setBookmarks] = useState<MovieCatalogItem[]>([])
+  const [showBookmarksDrawer, setShowBookmarksDrawer] = useState(false)
+
+  const fetchBookmarks = async () => {
+    try {
+      const res = await fetch('/api/bookmarks')
+      if (res.ok) {
+        const data = await res.json()
+        if (data.bookmarks) {
+          setBookmarks(data.bookmarks)
+          localStorage.setItem('tmdb_movie_bookmarks', JSON.stringify(data.bookmarks))
+          return
+        }
+      }
+    } catch {
+      // Fallback to localStorage if API unavailable
+    }
+    const saved = localStorage.getItem('tmdb_movie_bookmarks')
+    if (saved) {
+      try {
+        setBookmarks(JSON.parse(saved))
+      } catch {}
+    }
+  }
+
+  const toggleBookmark = async (movie: MovieCatalogItem) => {
+    const isAlready = bookmarks.some((b) => b.title.toLowerCase() === movie.title.toLowerCase())
+    let updated: MovieCatalogItem[]
+    if (isAlready) {
+      updated = bookmarks.filter((b) => b.title.toLowerCase() !== movie.title.toLowerCase())
+      setBookmarks(updated)
+      localStorage.setItem('tmdb_movie_bookmarks', JSON.stringify(updated))
+      try {
+        await fetch(`/api/bookmarks/${encodeURIComponent(movie.title)}`, { method: 'DELETE' })
+      } catch (err) {
+        console.warn('Failed to delete bookmark on backend:', err)
+      }
+    } else {
+      const newBookmark: MovieCatalogItem = {
+        id: movie.id,
+        title: movie.title,
+        release_year: movie.release_year,
+        runtime: movie.runtime,
+        genres: movie.genres,
+        poster_url: movie.poster_url,
+        vote_average: movie.vote_average,
+        original_language: movie.original_language,
+        overview: movie.overview,
+        tagline: movie.tagline,
+        budget: movie.budget,
+      }
+      updated = [newBookmark, ...bookmarks.filter((b) => b.title.toLowerCase() !== movie.title.toLowerCase())]
+      setBookmarks(updated)
+      localStorage.setItem('tmdb_movie_bookmarks', JSON.stringify(updated))
+      try {
+        await fetch('/api/bookmarks', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(newBookmark),
+        })
+      } catch (err) {
+        console.warn('Failed to save bookmark on backend:', err)
+      }
+    }
+  }
+
+  const isBookmarked = (movieTitle: string) => {
+    return bookmarks.some((b) => b.title.toLowerCase() === movieTitle.toLowerCase())
+  }
+
+  useEffect(() => {
+    fetchBookmarks()
+  }, [])
+
   useEffect(() => {
     checkHealthAndStatus()
   }, [])
@@ -678,8 +757,25 @@ export default function App() {
             </div>
           </div>
 
-          <div className="flex items-center gap-4 text-xs font-mono text-[#78716c]">
-            <div className="flex items-center gap-1.5">
+          <div className="flex items-center gap-3 text-xs font-mono text-[#78716c]">
+            <button
+              type="button"
+              onClick={() => setShowBookmarksDrawer(true)}
+              className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-[#e5e2da] bg-[#fcfbf9] hover:bg-[#f0eee6] text-xs font-mono text-[#1c1917] transition cursor-pointer shadow-2xs"
+              title="Open bookmarked movies watchlist"
+            >
+              <Heart
+                className={`w-3.5 h-3.5 ${
+                  bookmarks.length > 0 ? 'fill-rose-500 text-rose-500' : 'text-[#78716c]'
+                }`}
+              />
+              <span className="font-medium">Watchlist</span>
+              <span className="bg-[#e5e2da] text-[#44403c] text-[10px] px-1.5 py-0.2 rounded-full font-bold">
+                {bookmarks.length}
+              </span>
+            </button>
+
+            <div className="flex items-center gap-1.5 border-l border-[#e5e2da] pl-3">
               <span
                 className={`w-2 h-2 rounded-full ${
                   backendStatus === 'connected'
@@ -725,45 +821,70 @@ export default function App() {
             {showSearchDropdown && searchResults.length > 0 && (
               <div className="absolute left-0 right-0 top-full mt-1.5 bg-white border border-[#e5e2da] rounded-lg shadow-lg overflow-hidden max-h-80 overflow-y-auto divide-y divide-[#f0eee6]">
                 {searchResults.map((movie) => (
-                  <button
+                  <div
                     key={movie.id || movie.title}
-                    type="button"
                     onClick={() => selectMovie(movie)}
-                    className="w-full text-left p-2.5 hover:bg-[#f8f7f4] flex items-center gap-3 transition-colors cursor-pointer"
+                    className="w-full text-left p-2.5 hover:bg-[#f8f7f4] flex items-center justify-between gap-3 transition-colors cursor-pointer group"
                   >
-                    {movie.poster_url ? (
-                      <img
-                        src={movie.poster_url}
-                        alt={movie.title}
-                        className="w-8 h-12 object-cover rounded border border-[#e5e2da] shrink-0 bg-[#f0eee6]"
-                        onError={(e) => {
-                          ;(e.target as HTMLImageElement).style.display = 'none'
-                        }}
-                      />
-                    ) : (
-                      <div className="w-8 h-12 rounded border border-[#e5e2da] bg-[#f8f7f4] flex items-center justify-center shrink-0 text-[#a8a29e]">
-                        <Film className="w-3.5 h-3.5" />
-                      </div>
-                    )}
-                    <div className="flex-1 min-w-0">
-                      <div className="flex items-center gap-1.5">
-                        <span className="font-bold text-xs text-[#1c1917] truncate">
-                          {movie.title}
-                        </span>
-                        {movie.release_year && (
-                          <span className="text-[10px] font-mono text-[#78716c]">
-                            ({movie.release_year})
+                    <div className="flex items-center gap-3 flex-1 min-w-0">
+                      {movie.poster_url ? (
+                        <img
+                          src={movie.poster_url}
+                          alt={movie.title}
+                          className="w-8 h-12 object-cover rounded border border-[#e5e2da] shrink-0 bg-[#f0eee6]"
+                          onError={(e) => {
+                            ;(e.target as HTMLImageElement).style.display = 'none'
+                          }}
+                        />
+                      ) : (
+                        <div className="w-8 h-12 rounded border border-[#e5e2da] bg-[#f8f7f4] flex items-center justify-center shrink-0 text-[#a8a29e]">
+                          <Film className="w-3.5 h-3.5" />
+                        </div>
+                      )}
+                      <div className="flex-1 min-w-0">
+                        <div className="flex items-center gap-1.5">
+                          <span className="font-bold text-xs text-[#1c1917] truncate">
+                            {movie.title}
                           </span>
-                        )}
+                          {movie.release_year && (
+                            <span className="text-[10px] font-mono text-[#78716c]">
+                              ({movie.release_year})
+                            </span>
+                          )}
+                        </div>
+                        <p className="text-[11px] text-[#78716c] truncate">
+                          {movie.genres?.join(', ') || 'Uncategorized'} &bull; {movie.runtime ? `${movie.runtime}m` : 'Runtime N/A'}
+                        </p>
                       </div>
-                      <p className="text-[11px] text-[#78716c] truncate">
-                        {movie.genres?.join(', ') || 'Uncategorized'} &bull; {movie.runtime ? `${movie.runtime}m` : 'Runtime N/A'}
-                      </p>
                     </div>
-                    <span className="text-[10px] font-mono text-[#78716c] uppercase shrink-0">
-                      Select &rarr;
-                    </span>
-                  </button>
+
+                    <div className="flex items-center gap-2 shrink-0">
+                      {/* Bookmark Heart Button on Search Result Card */}
+                      <button
+                        type="button"
+                        onClick={(e) => {
+                          e.stopPropagation()
+                          toggleBookmark(movie)
+                        }}
+                        className={`p-1.5 rounded-full transition cursor-pointer ${
+                          isBookmarked(movie.title)
+                            ? 'text-rose-600 bg-rose-50 hover:bg-rose-100'
+                            : 'text-[#a8a29e] hover:text-rose-600 hover:bg-[#f0eee6]'
+                        }`}
+                        title={isBookmarked(movie.title) ? 'Remove bookmark' : 'Bookmark movie'}
+                      >
+                        <Heart
+                          className={`w-4 h-4 transition-transform active:scale-125 ${
+                            isBookmarked(movie.title) ? 'fill-rose-500 text-rose-500' : ''
+                          }`}
+                        />
+                      </button>
+
+                      <span className="text-[10px] font-mono text-[#78716c] uppercase group-hover:text-[#1c1917] hidden sm:inline">
+                        Select &rarr;
+                      </span>
+                    </div>
+                  </div>
                 ))}
               </div>
             )}
@@ -828,14 +949,15 @@ export default function App() {
             className="flex gap-3 overflow-x-auto pb-2 scroll-smooth scrollbar-thin scrollbar-thumb-[#d6d3d1] scrollbar-track-transparent -mx-1 px-1"
           >
             {QUICK_PICKS.map((film) => (
-              <button
+              <div
                 key={film.id}
-                type="button"
-                title={`${film.title} (${film.release_year}) — Click to evaluate`}
-                onClick={() => selectMovie(film)}
-                className="group shrink-0 cursor-pointer focus:outline-none text-left"
+                className="group shrink-0 relative text-left"
               >
-                <div className="w-20 sm:w-22 rounded-md border border-[#e5e2da] overflow-hidden bg-[#f0eee6] shadow-xs transition-all duration-200 group-hover:shadow-md group-hover:border-[#1c1917] group-hover:-translate-y-0.5">
+                <div
+                  onClick={() => selectMovie(film)}
+                  className="w-20 sm:w-22 rounded-md border border-[#e5e2da] overflow-hidden bg-[#f0eee6] shadow-xs transition-all duration-200 group-hover:shadow-md group-hover:border-[#1c1917] group-hover:-translate-y-0.5 cursor-pointer relative"
+                  title={`${film.title} (${film.release_year}) — Click to evaluate`}
+                >
                   <div className="w-full h-28 sm:h-30 overflow-hidden bg-[#e5e2da] relative">
                     <img
                       src={film.poster_url!}
@@ -846,6 +968,25 @@ export default function App() {
                         (e.target as HTMLImageElement).src = 'https://placehold.co/80x120/e5e2da/78716c?text=Poster'
                       }}
                     />
+
+                    {/* Quick Pick Floating Bookmark Button */}
+                    <button
+                      type="button"
+                      onClick={(e) => {
+                        e.stopPropagation()
+                        toggleBookmark(film)
+                      }}
+                      className={`absolute top-1 right-1 p-1 rounded-full z-10 transition-all cursor-pointer backdrop-blur-xs shadow-xs ${
+                        isBookmarked(film.title)
+                          ? 'bg-rose-500 text-white shadow-rose-200'
+                          : 'bg-black/40 text-white/80 hover:bg-black/70 hover:text-white'
+                      }`}
+                      title={isBookmarked(film.title) ? 'Remove bookmark' : 'Bookmark movie'}
+                    >
+                      <Heart
+                        className={`w-3 h-3 ${isBookmarked(film.title) ? 'fill-white' : ''}`}
+                      />
+                    </button>
                   </div>
                   <div className="px-1.5 py-1.5 bg-white space-y-0.5">
                     <p className="text-[9px] font-mono font-medium text-[#292524] truncate leading-tight">
@@ -857,7 +998,7 @@ export default function App() {
                     </div>
                   </div>
                 </div>
-              </button>
+              </div>
             ))}
           </div>
         </div>
@@ -1077,7 +1218,7 @@ export default function App() {
               {/* SECTION 1: CINEPHILE FILM DOSSIER HEADER */}
               <div className="flex flex-col sm:flex-row items-start gap-6 border-b border-[#f0eee6] pb-6">
                 {/* Poster Display (Authentic 2:3 ratio frame) */}
-                <div className="w-36 sm:w-44 h-52 sm:h-64 rounded-lg border border-[#e5e2da] overflow-hidden shrink-0 shadow-md bg-[#f0eee6] relative">
+                <div className="w-36 sm:w-44 h-52 sm:h-64 rounded-lg border border-[#e5e2da] overflow-hidden shrink-0 shadow-md bg-[#f0eee6] relative group">
                   {posterUrl ? (
                     <img
                       src={posterUrl}
@@ -1093,18 +1234,76 @@ export default function App() {
                       <span className="text-[11px] font-mono leading-tight">No Poster Available</span>
                     </div>
                   )}
+
+                  {/* Floating Bookmark Button on Main Prediction Card Poster */}
+                  <button
+                    type="button"
+                    onClick={() =>
+                      toggleBookmark({
+                        title,
+                        release_year: releaseYear,
+                        runtime,
+                        genres: selectedGenres,
+                        poster_url: posterUrl || undefined,
+                        budget,
+                        original_language: language,
+                        tagline: tagline || undefined,
+                        overview: overview || undefined,
+                      })
+                    }
+                    className={`absolute top-2 right-2 p-1.5 rounded-full z-10 transition-all cursor-pointer shadow-md backdrop-blur-xs ${
+                      isBookmarked(title)
+                        ? 'bg-rose-500 text-white shadow-rose-200'
+                        : 'bg-black/50 text-white/90 hover:bg-black/80 hover:text-white'
+                    }`}
+                    title={isBookmarked(title) ? 'Remove from watchlist' : 'Bookmark this film'}
+                  >
+                    <Heart className={`w-4 h-4 ${isBookmarked(title) ? 'fill-white' : ''}`} />
+                  </button>
                 </div>
 
                 {/* Film Metadata & Overview */}
                 <div className="space-y-3 flex-1 min-w-0">
                   <div className="space-y-1">
-                    <div className="flex items-center gap-2 flex-wrap">
-                      <span className="text-[10px] font-mono uppercase tracking-widest text-[#78716c] bg-[#f8f7f4] border border-[#e5e2da] px-2 py-0.5 rounded">
-                        TMDB Catalog Dossier
-                      </span>
-                      <span className="text-xs font-mono text-[#78716c]">
-                        {releaseYear} &bull; {formatRuntime(runtime)} &bull; {language.toUpperCase()}
-                      </span>
+                    <div className="flex items-center justify-between gap-3 flex-wrap">
+                      <div className="flex items-center gap-2 flex-wrap">
+                        <span className="text-[10px] font-mono uppercase tracking-widest text-[#78716c] bg-[#f8f7f4] border border-[#e5e2da] px-2 py-0.5 rounded">
+                          TMDB Catalog Dossier
+                        </span>
+                        <span className="text-xs font-mono text-[#78716c]">
+                          {releaseYear} &bull; {formatRuntime(runtime)} &bull; {language.toUpperCase()}
+                        </span>
+                      </div>
+
+                      {/* Header Bookmark Action Button */}
+                      <button
+                        type="button"
+                        onClick={() =>
+                          toggleBookmark({
+                            title,
+                            release_year: releaseYear,
+                            runtime,
+                            genres: selectedGenres,
+                            poster_url: posterUrl || undefined,
+                            budget,
+                            original_language: language,
+                            tagline: tagline || undefined,
+                            overview: overview || undefined,
+                          })
+                        }
+                        className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-md text-xs font-mono font-medium border transition cursor-pointer ${
+                          isBookmarked(title)
+                            ? 'bg-rose-50 border-rose-200 text-rose-700 hover:bg-rose-100'
+                            : 'bg-white border-[#e5e2da] text-[#57534e] hover:border-rose-300 hover:text-rose-600'
+                        }`}
+                      >
+                        <Heart
+                          className={`w-3.5 h-3.5 ${
+                            isBookmarked(title) ? 'fill-rose-500 text-rose-500' : ''
+                          }`}
+                        />
+                        <span>{isBookmarked(title) ? 'Bookmarked' : 'Bookmark Film'}</span>
+                      </button>
                     </div>
 
                     <h1 className="font-serif font-black text-2xl sm:text-3xl text-[#1c1917] tracking-tight leading-tight">
@@ -1223,6 +1422,151 @@ export default function App() {
         <p>TMDB Movie Popularity Classifier &bull; Multi-Layer Perceptron (MLP)</p>
         <p className="text-[11px] font-mono text-[#a8a29e]">FastAPI (:8001) &bull; Vite + React + TS (:5174)</p>
       </footer>
+
+      {/* WATCHLIST / BOOKMARK DRAWER MODAL */}
+      {showBookmarksDrawer && (
+        <div className="fixed inset-0 z-50 flex justify-end bg-black/40 backdrop-blur-xs">
+          <div className="w-full max-w-md bg-white h-full shadow-2xl flex flex-col border-l border-[#e5e2da] animate-in slide-in-from-right duration-200">
+            {/* Drawer Header */}
+            <div className="p-4 border-b border-[#f0eee6] flex items-center justify-between bg-[#fcfbf9]">
+              <div className="flex items-center gap-2">
+                <Heart className="w-4 h-4 fill-rose-500 text-rose-500" />
+                <h2 className="font-serif font-bold text-base text-[#1c1917]">
+                  Your Film Watchlist
+                </h2>
+                <span className="bg-rose-50 border border-rose-200 text-rose-700 text-xs font-mono font-bold px-2 py-0.5 rounded-full">
+                  {bookmarks.length}
+                </span>
+              </div>
+              <button
+                type="button"
+                onClick={() => setShowBookmarksDrawer(false)}
+                className="p-1 rounded-md text-[#78716c] hover:text-[#1c1917] hover:bg-[#f0eee6] transition cursor-pointer"
+                title="Close"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            {/* Bookmarks List */}
+            <div className="flex-1 overflow-y-auto p-4 space-y-3 divide-y divide-[#f0eee6]">
+              {bookmarks.length === 0 ? (
+                <div className="text-center py-16 space-y-3">
+                  <div className="w-12 h-12 rounded-full bg-rose-50 text-rose-500 flex items-center justify-center mx-auto border border-rose-200">
+                    <Heart className="w-6 h-6" />
+                  </div>
+                  <div className="space-y-1">
+                    <p className="font-serif font-bold text-[#1c1917]">No bookmarks yet</p>
+                    <p className="text-xs text-[#78716c] max-w-xs mx-auto leading-relaxed">
+                      Click the heart icon on any movie in the search bar, quick picks, or prediction dossier to save it to your watchlist.
+                    </p>
+                  </div>
+                </div>
+              ) : (
+                bookmarks.map((bm) => (
+                  <div
+                    key={bm.title}
+                    className="pt-3 first:pt-0 flex items-start gap-3 group"
+                  >
+                    {/* Poster */}
+                    <div
+                      onClick={() => {
+                        selectMovie(bm)
+                        setShowBookmarksDrawer(false)
+                      }}
+                      className="w-12 h-18 rounded border border-[#e5e2da] overflow-hidden shrink-0 bg-[#f0eee6] cursor-pointer hover:border-[#1c1917] transition"
+                    >
+                      {bm.poster_url ? (
+                        <img
+                          src={bm.poster_url}
+                          alt={bm.title}
+                          className="w-full h-full object-cover"
+                          onError={(e) => {
+                            ;(e.target as HTMLImageElement).src =
+                              'https://placehold.co/80x120/e5e2da/78716c?text=Poster'
+                          }}
+                        />
+                      ) : (
+                        <div className="w-full h-full flex items-center justify-center text-[#a8a29e]">
+                          <Film className="w-4 h-4" />
+                        </div>
+                      )}
+                    </div>
+
+                    {/* Metadata & Actions */}
+                    <div className="flex-1 min-w-0 space-y-1">
+                      <div className="flex items-start justify-between gap-2">
+                        <h3
+                          onClick={() => {
+                            selectMovie(bm)
+                            setShowBookmarksDrawer(false)
+                          }}
+                          className="font-bold text-xs text-[#1c1917] truncate hover:underline cursor-pointer"
+                        >
+                          {bm.title}
+                        </h3>
+                        <button
+                          type="button"
+                          onClick={() => toggleBookmark(bm)}
+                          className="text-[#a8a29e] hover:text-rose-600 p-1 transition cursor-pointer"
+                          title="Remove from watchlist"
+                        >
+                          <Trash2 className="w-3.5 h-3.5" />
+                        </button>
+                      </div>
+
+                      <div className="flex items-center gap-1.5 text-[10px] font-mono text-[#78716c]">
+                        {bm.release_year && <span>{bm.release_year}</span>}
+                        {bm.runtime && <span>&bull; {bm.runtime}m</span>}
+                        {bm.original_language && (
+                          <span className="uppercase">&bull; {bm.original_language}</span>
+                        )}
+                      </div>
+
+                      <div className="flex items-center justify-between pt-1">
+                        <span className="text-[10px] text-[#78716c] truncate max-w-[180px]">
+                          {bm.genres?.join(', ') || 'Uncategorized'}
+                        </span>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            selectMovie(bm)
+                            setShowBookmarksDrawer(false)
+                          }}
+                          className="text-[10px] font-mono uppercase font-bold text-[#1c1917] hover:underline flex items-center gap-0.5 cursor-pointer"
+                        >
+                          <span>Evaluate</span>
+                          <ArrowRight className="w-3 h-3" />
+                        </button>
+                      </div>
+                    </div>
+                  </div>
+                ))
+              )}
+            </div>
+
+            {/* Footer */}
+            {bookmarks.length > 0 && (
+              <div className="p-3 bg-[#fcfbf9] border-t border-[#f0eee6] flex justify-between items-center text-xs">
+                <span className="text-[11px] font-mono text-[#78716c]">
+                  Synchronized with backend DB
+                </span>
+                <button
+                  type="button"
+                  onClick={() => {
+                    if (confirm('Clear all bookmarks?')) {
+                      bookmarks.forEach((b) => toggleBookmark(b))
+                    }
+                  }}
+                  className="text-[11px] font-mono text-rose-600 hover:underline cursor-pointer"
+                >
+                  Clear All
+                </button>
+              </div>
+            )}
+          </div>
+        </div>
+      )}
     </div>
   )
 }
