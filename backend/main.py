@@ -16,6 +16,7 @@ from backend.data_processor import (
     STANDARD_GENRES,
     TOP_LANGUAGES,
 )
+from backend.prediction_store import prediction_store
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("TMDB_API")
@@ -570,10 +571,31 @@ def _build_prediction(payload: MoviePredictionRequest, prob: Optional[float]) ->
     )
 
 
+def _log_predictions(payloads: List[MoviePredictionRequest], results: List[MoviePredictionResponse]) -> None:
+    """Persist inferences for /api/analytics/summary. Best-effort: never raises."""
+    try:
+        prediction_store.log([
+            {
+                "title": r.title,
+                "release_year": p.release_year,
+                "runtime": p.runtime,
+                "budget": p.budget,
+                "original_language": p.original_language,
+                "genres": p.genres,
+                "probability": r.probability,
+                "is_popular": r.is_popular,
+            }
+            for p, r in zip(payloads, results)
+        ])
+    except Exception as e:
+        logger.warning(f"Prediction logging skipped: {e}")
+
+
 @app.post("/api/predict", response_model=MoviePredictionResponse)
 def predict_movie_popularity(payload: MoviePredictionRequest):
     prob = _mlp_probabilities([payload])[0]
     result = _build_prediction(payload, prob)
+    _log_predictions([payload], [result])
     return result
 
 
@@ -715,6 +737,7 @@ def compare_movies(payload: CompareRequest):
     a, b = payload.movie_a, payload.movie_b
     probs = _mlp_probabilities([a, b])  # single batched inference for both movies
     res_a, res_b = _build_prediction(a, probs[0]), _build_prediction(b, probs[1])
+    _log_predictions([a, b], [res_a, res_b])
 
     prob_a, prob_b = res_a.probability, res_b.probability
     delta = round(abs(prob_a - prob_b), 4)
@@ -749,3 +772,15 @@ def compare_movies(payload: CompareRequest):
         movie_a=res_a,
         movie_b=res_b,
     )
+
+
+# ==========================================
+# [BE-4] PLATFORM INSIGHTS  ->  GET /api/analytics/summary
+# ==========================================
+@app.get("/api/analytics/summary")
+def analytics_summary(
+    min_probability: float = Query(0.5, ge=0.0, le=1.0, description="Predictions at/above this probability count as 'top-scoring' for the genre ranking"),
+    top_genres: int = Query(5, ge=1, le=19, description="How many genres to return"),
+):
+    """Aggregated stats over logged predictions. Results are cached in memory (30s TTL, invalidated on every new prediction)."""
+    return prediction_store.summary(min_probability=min_probability, top_genres=top_genres)
