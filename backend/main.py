@@ -290,6 +290,52 @@ def get_metadata_options():
 # BOOKMARKS & WATCHLIST API
 # ==========================================
 BOOKMARKS_DB_PATH = os.path.join(DATA_DIR, "bookmarks.db")
+PREDICTION_LOGS_DB_PATH = os.path.join(DATA_DIR, "prediction_history.db")
+
+def init_prediction_logs_table():
+    """Create a lightweight local audit store used by the dashboard history views."""
+    try:
+        conn = sqlite3.connect(PREDICTION_LOGS_DB_PATH)
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS prediction_logs (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                title TEXT NOT NULL,
+                probability REAL NOT NULL,
+                prediction TEXT NOT NULL,
+                is_popular INTEGER NOT NULL,
+                model_architecture TEXT NOT NULL,
+                release_year INTEGER,
+                runtime INTEGER,
+                budget REAL,
+                original_language TEXT,
+                genres TEXT,
+                poster_url TEXT,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        """)
+        conn.commit()
+        conn.close()
+    except Exception as e:
+        logger.warning(f"Failed to initialize prediction history: {e}")
+
+def record_prediction(payload: MoviePredictionRequest, result: MoviePredictionResponse):
+    """Best-effort audit logging; inference should still succeed if storage is unavailable."""
+    try:
+        conn = sqlite3.connect(PREDICTION_LOGS_DB_PATH)
+        conn.execute("""
+            INSERT INTO prediction_logs (
+                title, probability, prediction, is_popular, model_architecture,
+                release_year, runtime, budget, original_language, genres, poster_url
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """, (
+            result.title, result.probability, result.prediction, int(result.is_popular),
+            result.model_architecture, payload.release_year, payload.runtime, payload.budget,
+            payload.original_language, ", ".join(payload.genres), result.poster_url,
+        ))
+        conn.commit()
+        conn.close()
+    except Exception as e:
+        logger.warning(f"Failed to record prediction audit event: {e}")
 
 def init_bookmarks_table():
     try:
@@ -322,6 +368,7 @@ def init_bookmarks_table():
         logger.warning(f"Failed to init bookmarks table: {e}")
 
 init_bookmarks_table()
+init_prediction_logs_table()
 
 class BookmarkPayload(BaseModel):
     title: str
@@ -408,6 +455,23 @@ def delete_bookmark(title_or_id: str):
     except Exception as e:
         logger.error(f"Error deleting bookmark: {e}")
         raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/predictions")
+def get_prediction_history(limit: int = Query(50, ge=1, le=200)):
+    """Return recent genuine inference events for the dashboard history and audit table."""
+    init_prediction_logs_table()
+    try:
+        conn = sqlite3.connect(PREDICTION_LOGS_DB_PATH)
+        conn.row_factory = sqlite3.Row
+        rows = conn.execute(
+            "SELECT * FROM prediction_logs ORDER BY id DESC LIMIT ?", (limit,)
+        ).fetchall()
+        conn.close()
+        return {"predictions": [dict(row) for row in rows], "total": len(rows)}
+    except Exception as e:
+        logger.error(f"Error fetching prediction history: {e}")
+        raise HTTPException(status_code=500, detail="Prediction history is unavailable")
 
 
 @app.post("/api/predict", response_model=MoviePredictionResponse)
@@ -547,7 +611,7 @@ def predict_movie_popularity(payload: MoviePredictionRequest):
     diff = abs(prob - 0.50)
     confidence = "High" if diff >= 0.25 else ("Moderate" if diff >= 0.10 else "Low (Borderline)")
 
-    return MoviePredictionResponse(
+    response = MoviePredictionResponse(
         title=payload.title or "Untitled Film",
         prediction="Popular" if is_popular else "Kurang Populer",
         is_popular=is_popular,
@@ -567,3 +631,5 @@ def predict_movie_popularity(payload: MoviePredictionRequest):
         tagline=payload.tagline,
         overview=payload.overview,
     )
+    record_prediction(payload, response)
+    return response
