@@ -15,46 +15,13 @@ import {
   ChevronRight,
   Heart,
   Trash2,
-  X
+  X,
+  Clock3
 } from 'lucide-react'
-
-interface MovieCatalogItem {
-  id?: number
-  title: string
-  original_title?: string
-  release_year?: number
-  runtime?: number
-  genres?: string[]
-  original_language?: string
-  budget?: number
-  tagline?: string
-  overview?: string
-  poster_path?: string
-  poster_url?: string | null
-  backdrop_url?: string | null
-  vote_average?: number
-}
-
-interface PredictionResult {
-  title: string
-  prediction: string
-  is_popular: boolean
-  probability: number
-  threshold_percentile: string
-  confidence_level: string
-  model_architecture: string
-  input_features: {
-    genres: string[]
-    release_year: number
-    runtime: number
-    original_language: string
-    budget: number
-  }
-  feature_insights: string[]
-  poster_url?: string | null
-  tagline?: string | null
-  overview?: string | null
-}
+import { getPredictionHistory } from './api'
+import { MovieBattle } from './components/MovieBattle'
+import { AuditLogTable } from './components/PredictionHistory'
+import type { MovieCatalogItem, PredictionLog, PredictionResult } from './types'
 
 interface DatasetStatus {
   dataset_directory: string
@@ -65,6 +32,13 @@ interface DatasetStatus {
   model_trained: boolean
   model_metrics?: Record<string, number>
   popularity_threshold_75th?: number
+}
+
+type AppPage = 'dashboard' | 'battle' | 'history'
+
+const getPageFromPath = (): AppPage => {
+  const page = window.location.pathname.split('/').filter(Boolean).at(-1)
+  return page === 'battle' || page === 'history' ? page : 'dashboard'
 }
 
 const AVAILABLE_GENRES = [
@@ -445,6 +419,7 @@ const QUICK_PICKS: MovieCatalogItem[] = [
 ]
 
 export default function App() {
+  const [page, setPage] = useState<AppPage>(getPageFromPath)
   // Form fields
   const [title, setTitle] = useState('Dune: Part Two')
   const [selectedGenres, setSelectedGenres] = useState<string[]>(['Science Fiction', 'Adventure', 'Action'])
@@ -485,6 +460,27 @@ export default function App() {
   // Bookmarks / Watchlist state
   const [bookmarks, setBookmarks] = useState<MovieCatalogItem[]>([])
   const [showBookmarksDrawer, setShowBookmarksDrawer] = useState(false)
+  const [predictionLogs, setPredictionLogs] = useState<PredictionLog[]>([])
+  const [isHistoryLoading, setIsHistoryLoading] = useState(false)
+  const [historyError, setHistoryError] = useState('')
+
+  const fetchPredictionHistory = async () => {
+    setIsHistoryLoading(true)
+    setHistoryError('')
+    try {
+      setPredictionLogs(await getPredictionHistory())
+    } catch (error) {
+      setHistoryError(error instanceof Error ? error.message : 'Unable to load prediction history.')
+    } finally {
+      setIsHistoryLoading(false)
+    }
+  }
+
+  const navigateTo = (nextPage: AppPage) => {
+    const nextPath = nextPage === 'dashboard' ? '/' : `/${nextPage}`
+    window.history.pushState({}, '', nextPath)
+    setPage(nextPage)
+  }
 
   const fetchBookmarks = async () => {
     try {
@@ -574,6 +570,18 @@ export default function App() {
 
   useEffect(() => {
     fetchBookmarks()
+    fetchPredictionHistory()
+  }, [])
+
+  useEffect(() => {
+    const interval = window.setInterval(fetchPredictionHistory, 15_000)
+    return () => window.clearInterval(interval)
+  }, [])
+
+  useEffect(() => {
+    const onPopState = () => setPage(getPageFromPath())
+    window.addEventListener('popstate', onPopState)
+    return () => window.removeEventListener('popstate', onPopState)
   }, [])
 
   useEffect(() => {
@@ -700,6 +708,7 @@ export default function App() {
       const data = await res.json()
       setResult(data)
       setBackendStatus('connected')
+      void fetchPredictionHistory()
     } catch {
       const isPopular = payload.budget >= 30_000_000 || payload.genres.some((g: string) => ['Action', 'Adventure', 'Science Fiction'].includes(g))
       setResult({
@@ -779,6 +788,33 @@ export default function App() {
           <div className="flex items-center gap-3 text-xs font-mono text-[#78716c]">
             <button
               type="button"
+              onClick={() => navigateTo('dashboard')}
+              className={`hidden md:flex items-center gap-1.5 px-3 py-1.5 rounded-lg border text-xs font-mono transition cursor-pointer ${page === 'dashboard' ? 'border-[#1c1917] bg-[#1c1917] text-white' : 'border-[#e5e2da] bg-[#fcfbf9] hover:bg-[#f0eee6] text-[#1c1917]'}`}
+            >
+              <span className="font-medium">Dossier</span>
+            </button>
+            <button
+              type="button"
+              onClick={() => navigateTo('battle')}
+              className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg border text-xs font-mono transition cursor-pointer ${page === 'battle' ? 'border-[#1c1917] bg-[#1c1917] text-white' : 'border-[#e5e2da] bg-[#fcfbf9] hover:bg-[#f0eee6] text-[#1c1917]'}`}
+            >
+              <span className="font-medium">Battle</span>
+            </button>
+            <button
+              type="button"
+              onClick={() => {
+                navigateTo('history')
+                void fetchPredictionHistory()
+              }}
+              className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg border text-xs font-mono transition cursor-pointer ${page === 'history' ? 'border-[#1c1917] bg-[#1c1917] text-white' : 'border-[#e5e2da] bg-[#fcfbf9] hover:bg-[#f0eee6] text-[#1c1917]'}`}
+              title="Open prediction history"
+            >
+              <Clock3 className="w-3.5 h-3.5" />
+              <span className="font-medium hidden sm:inline">History</span>
+              <span className={`text-[10px] px-1.5 py-0.2 rounded-full font-bold ${page === 'history' ? 'bg-white/20 text-white' : 'bg-[#e5e2da] text-[#44403c]'}`}>{predictionLogs.length}</span>
+            </button>
+            <button
+              type="button"
               onClick={() => setShowBookmarksDrawer(true)}
               className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-[#e5e2da] bg-[#fcfbf9] hover:bg-[#f0eee6] text-xs font-mono text-[#1c1917] transition cursor-pointer shadow-2xs"
               title="Open bookmarked movies watchlist"
@@ -814,6 +850,7 @@ export default function App() {
 
       {/* Main Body */}
       <main className="max-w-7xl mx-auto px-6 py-6 space-y-6">
+        {page === 'dashboard' ? <>
         {/* Search Bar & Dataset Status in One Unified Row */}
         <div className="flex flex-col md:flex-row gap-3 items-stretch md:items-center justify-between">
           {/* Autocomplete Search Bar */}
@@ -1434,6 +1471,27 @@ export default function App() {
             </div>
           </section>
         </div>
+
+        </> : page === 'battle' ? <>
+          <div className="border-b border-[#e5e2da] pb-5">
+            <p className="text-[10px] font-mono uppercase tracking-widest text-[#78716c]">Analysis workspace</p>
+            <h1 className="font-serif font-bold text-3xl mt-1">Head-to-Head Movie Battle</h1>
+            <p className="text-sm text-[#78716c] mt-2">Select two catalog films and compare their real MLP popularity forecasts.</p>
+          </div>
+          <MovieBattle onPrediction={fetchPredictionHistory} />
+        </> : <>
+          <div className="border-b border-[#e5e2da] pb-5">
+            <p className="text-[10px] font-mono uppercase tracking-widest text-[#78716c]">Inference records</p>
+            <h1 className="font-serif font-bold text-3xl mt-1">Prediction History</h1>
+            <p className="text-sm text-[#78716c] mt-2">Every successful model run is recorded here. The table refreshes every 15 seconds.</p>
+          </div>
+          <AuditLogTable
+            logs={predictionLogs}
+            loading={isHistoryLoading}
+            error={historyError}
+            onRefresh={fetchPredictionHistory}
+          />
+        </>}
       </main>
 
       {/* Footer */}
