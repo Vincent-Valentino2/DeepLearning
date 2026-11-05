@@ -229,6 +229,24 @@ class PredictionStore:
             for row in rows
         ]
 
+    def delete(self, prediction_id: int) -> bool:
+        """Delete one prediction log entry; return whether a row was removed."""
+        self._ensure_backend()
+        conn = self._connect()
+        try:
+            cur = conn.cursor()
+            cur.execute(
+                f"DELETE FROM prediction_logs WHERE id = {self._ph}",
+                (prediction_id,),
+            )
+            deleted = cur.rowcount > 0
+            conn.commit()
+        finally:
+            conn.close()
+        if deleted:
+            self._version += 1
+        return deleted
+
     # ------------------------------------------------------------------ #
     # Analytics
     # ------------------------------------------------------------------ #

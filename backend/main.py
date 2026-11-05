@@ -4,7 +4,7 @@ import json
 import sqlite3
 import logging
 from typing import List, Optional, Dict, Any
-from fastapi import FastAPI, HTTPException, Query
+from fastapi import FastAPI, HTTPException, Path, Query
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 import numpy as np
@@ -425,6 +425,21 @@ def get_prediction_history(
     except Exception as e:
         logger.error(f"Error fetching prediction history: {e}")
         raise HTTPException(status_code=500, detail="Prediction history is unavailable")
+
+
+@app.delete("/api/predictions/history/{prediction_id}")
+def delete_prediction_history(prediction_id: int = Path(..., ge=1)):
+    """Delete one prediction log entry by its database ID."""
+    try:
+        deleted = prediction_store.delete(prediction_id)
+        if not deleted:
+            raise HTTPException(status_code=404, detail="Prediction history entry not found")
+        return {"status": "success", "deleted_id": prediction_id}
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error deleting prediction history entry {prediction_id}: {e}")
+        raise HTTPException(status_code=500, detail="Prediction history entry could not be deleted")
 
 
 
