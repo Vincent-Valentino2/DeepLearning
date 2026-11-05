@@ -16,6 +16,7 @@ from backend.data_processor import (
     STANDARD_GENRES,
     TOP_LANGUAGES,
 )
+from backend.prediction_store import prediction_store
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("TMDB_API")
@@ -410,9 +411,39 @@ def delete_bookmark(title_or_id: str):
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@app.post("/api/predict", response_model=MoviePredictionResponse)
-def predict_movie_popularity(payload: MoviePredictionRequest):
+# ==========================================
+# INFERENCE HELPERS (shared by /api/predict and /api/compare)
+# ==========================================
+def _mlp_probabilities(payloads: List[MoviePredictionRequest]) -> List[Optional[float]]:
+    """One batched MLP forward pass. Returns None for every row if the model is unavailable."""
     load_trained_model()
+    if "model" not in model_cache:
+        return [None] * len(payloads)
+    try:
+        mlp = model_cache["model"]
+        df_input = pd.DataFrame([{
+            "title": p.title,
+            "release_year": p.release_year,
+            "runtime": p.runtime,
+            "genres": ", ".join(p.genres),
+            "original_language": p.original_language,
+            "budget": p.budget,
+        } for p in payloads])
+
+        X_input, _ = extract_cinephile_features(
+            df_input,
+            scaler_budget=model_cache.get("scaler_budget"),
+            scaler_runtime=model_cache.get("scaler_runtime"),
+            fit_scalers=False
+        )
+        return [float(p) for p in mlp.predict_proba(X_input)[:, 1]]
+    except Exception as e:
+        logger.warning(f"Error during MLP inference, falling back: {e}")
+        return [None] * len(payloads)
+
+
+def _build_prediction(payload: MoviePredictionRequest, prob: Optional[float]) -> MoviePredictionResponse:
+    """Turns an MLP probability (or None -> heuristic fallback) into the full API response."""
     poster_url = payload.poster_url
     if not poster_url and payload.poster_path:
         if payload.poster_path.startswith("/"):
@@ -420,36 +451,7 @@ def predict_movie_popularity(payload: MoviePredictionRequest):
         else:
             poster_url = payload.poster_path
 
-    if "model" in model_cache:
-        try:
-            mlp = model_cache["model"]
-            scaler_budget = model_cache.get("scaler_budget")
-            scaler_runtime = model_cache.get("scaler_runtime")
-
-            df_input = pd.DataFrame([{
-                "title": payload.title,
-                "release_year": payload.release_year,
-                "runtime": payload.runtime,
-                "genres": ", ".join(payload.genres),
-                "original_language": payload.original_language,
-                "budget": payload.budget,
-            }])
-
-            X_input, _ = extract_cinephile_features(
-                df_input,
-                scaler_budget=scaler_budget,
-                scaler_runtime=scaler_runtime,
-                fit_scalers=False
-            )
-
-            prob = float(mlp.predict_proba(X_input)[0][1])
-            is_popular = bool(prob >= 0.50)
-            model_name = "Multi-Layer Perceptron (MLP) v2.0 - Cinephile Weights"
-        except Exception as e:
-            logger.warning(f"Error during MLP inference, falling back: {e}")
-            prob = None
-    else:
-        prob = None
+    model_name = "Multi-Layer Perceptron (MLP) v2.0 - Cinephile Weights"
 
     insights = []
     input_genres = set(payload.genres)
@@ -541,9 +543,9 @@ def predict_movie_popularity(payload: MoviePredictionRequest):
             base_score += 0.20
 
         prob = max(0.05, min(0.99, base_score))
-        is_popular = prob >= 0.50
         model_name = "Multi-Layer Perceptron (MLP) v2.0 - Cinephile Heuristic"
 
+    is_popular = bool(prob >= 0.50)
     diff = abs(prob - 0.50)
     confidence = "High" if diff >= 0.25 else ("Moderate" if diff >= 0.10 else "Low (Borderline)")
 
@@ -567,3 +569,218 @@ def predict_movie_popularity(payload: MoviePredictionRequest):
         tagline=payload.tagline,
         overview=payload.overview,
     )
+
+
+def _log_predictions(payloads: List[MoviePredictionRequest], results: List[MoviePredictionResponse]) -> None:
+    """Persist inferences for /api/analytics/summary. Best-effort: never raises."""
+    try:
+        prediction_store.log([
+            {
+                "title": r.title,
+                "release_year": p.release_year,
+                "runtime": p.runtime,
+                "budget": p.budget,
+                "original_language": p.original_language,
+                "genres": p.genres,
+                "probability": r.probability,
+                "is_popular": r.is_popular,
+            }
+            for p, r in zip(payloads, results)
+        ])
+    except Exception as e:
+        logger.warning(f"Prediction logging skipped: {e}")
+
+
+@app.post("/api/predict", response_model=MoviePredictionResponse)
+def predict_movie_popularity(payload: MoviePredictionRequest):
+    prob = _mlp_probabilities([payload])[0]
+    result = _build_prediction(payload, prob)
+    _log_predictions([payload], [result])
+    return result
+
+
+# ==========================================
+# [BE-3] HEAD-TO-HEAD COMPARATOR  ->  POST /api/compare
+# ==========================================
+class CompareRequest(BaseModel):
+    movie_a: MoviePredictionRequest
+    movie_b: MoviePredictionRequest
+
+
+class CompareResponse(BaseModel):
+    winner: str  # "movie_a" | "movie_b" | "tie"
+    winner_title: Optional[str] = None
+    probability_a: float
+    probability_b: float
+    delta_prob: float  # absolute gap |P(A) - P(B)|, 0.0 - 1.0
+    margin: str  # "Tie" | "Narrow" | "Clear" | "Decisive"
+    summary: str
+    breakdown: Dict[str, Any]  # budget_efficiency, runtime_advantage, genre_synergy
+    commentary: List[str]
+    movie_a: MoviePredictionResponse
+    movie_b: MoviePredictionResponse
+
+
+# Same cross-genre affinities the MLP encodes in extract_cinephile_features().
+_SYNERGY_RULES = [
+    ("War + Drama", lambda g: {"war", "drama"} <= g),
+    ("Science Fiction + Drama", lambda g: {"science fiction", "drama"} <= g),
+    ("Romance + Drama", lambda g: {"romance", "drama"} <= g),
+    ("Romance + Comedy", lambda g: {"romance", "comedy"} <= g),
+    ("Crime + Thriller/Mystery/Drama/Music", lambda g: "crime" in g and bool(g & {"thriller", "mystery", "drama", "music"})),
+    ("Action + Adventure + Science Fiction", lambda g: {"action", "adventure", "science fiction"} <= g),
+    ("Animation + Fantasy/Adventure", lambda g: "animation" in g and bool(g & {"fantasy", "adventure"})),
+    ("History + Drama", lambda g: {"history", "drama"} <= g),
+]
+
+BUDGET_FLOOR_USD = 1_000_000  # unreported/tiny budgets are floored so the ratio stays meaningful
+
+
+def _side_label(side: str) -> str:
+    return "Movie A" if side == "movie_a" else "Movie B"
+
+
+def _genre_synergy(genres: List[str]) -> Dict[str, Any]:
+    g = {x.strip().lower() for x in genres}
+    matched = [name for name, rule in _SYNERGY_RULES if rule(g)]
+    score = len(matched)
+    label = "Strong" if score >= 2 else ("Moderate" if score == 1 else "None")
+    return {"score": score, "rating": label, "matched": matched}
+
+
+def _runtime_band(runtime: int) -> str:
+    if runtime < 88:
+        return "Short"
+    if runtime <= 130:
+        return "Standard"
+    if runtime < 135:
+        return "Extended"
+    return "Epic"
+
+
+def _compare_breakdown(a: MoviePredictionRequest, b: MoviePredictionRequest,
+                       prob_a: float, prob_b: float) -> Dict[str, Any]:
+    # --- Budget efficiency: popularity probability per $10M of budget ---
+    eff_a = prob_a / (max(a.budget, BUDGET_FLOOR_USD) / 10_000_000)
+    eff_b = prob_b / (max(b.budget, BUDGET_FLOOR_USD) / 10_000_000)
+    if a.budget <= 0 and b.budget <= 0:
+        b_leader = "tie"
+        b_text = "Budget Efficiency: Neither film reports a budget, so efficiency cannot be compared."
+    else:
+        b_leader = "movie_a" if eff_a > eff_b else ("movie_b" if eff_b > eff_a else "tie")
+        if b_leader == "tie":
+            b_text = "Budget Efficiency: Both films convert budget into popularity probability at the same rate."
+        else:
+            hi, lo = (eff_a, eff_b) if b_leader == "movie_a" else (eff_b, eff_a)
+            ratio = hi / lo if lo > 0 else float("inf")
+            ratio_txt = f"{ratio:.1f}x" if ratio != float("inf") else "far"
+            b_text = (
+                f"Budget Efficiency: {_side_label(b_leader)} is {ratio_txt} more budget-efficient "
+                f"(Movie A {eff_a:.2f} vs Movie B {eff_b:.2f} popularity probability per $10M, "
+                f"budgets under ${BUDGET_FLOOR_USD:,} counted as ${BUDGET_FLOOR_USD:,})."
+            )
+
+    # --- Runtime advantage: bands the model encodes explicitly (Standard / Epic) ---
+    band_a, band_b = _runtime_band(a.runtime), _runtime_band(b.runtime)
+    favored = {"Standard", "Epic"}
+    if band_a == band_b:
+        r_leader = "tie"
+        r_text = f"Runtime Advantage: Both run in the {band_a} band ({a.runtime}m vs {b.runtime}m), so neither has a pacing edge."
+    elif band_a in favored and band_b not in favored:
+        r_leader = "movie_a"
+        r_text = f"Runtime Advantage: Movie A's {band_a} runtime ({a.runtime}m) fits a model-favored band, while Movie B's {band_b} runtime ({b.runtime}m) does not."
+    elif band_b in favored and band_a not in favored:
+        r_leader = "movie_b"
+        r_text = f"Runtime Advantage: Movie B's {band_b} runtime ({b.runtime}m) fits a model-favored band, while Movie A's {band_a} runtime ({a.runtime}m) does not."
+    elif band_a in favored and band_b in favored:
+        r_leader = "tie"
+        r_text = f"Runtime Advantage: Movie A is {band_a} ({a.runtime}m) and Movie B is {band_b} ({b.runtime}m); both are model-favored, so neither holds an inherent edge."
+    else:
+        r_leader = "tie"
+        r_text = f"Runtime Advantage: Neither runtime ({a.runtime}m vs {b.runtime}m) sits in a model-favored band."
+
+    # --- Genre synergy rating ---
+    syn_a, syn_b = _genre_synergy(a.genres), _genre_synergy(b.genres)
+    if syn_a["score"] == syn_b["score"]:
+        g_leader = "tie"
+        g_text = f"Genre Synergy: Equal rating ({syn_a['rating']} vs {syn_b['rating']}); neither lineup has more affinity pairings."
+    else:
+        g_leader = "movie_a" if syn_a["score"] > syn_b["score"] else "movie_b"
+        win = syn_a if g_leader == "movie_a" else syn_b
+        names = ", ".join(win["matched"])
+        g_text = f"Genre Synergy: {_side_label(g_leader)} rates {win['rating']} ({syn_a['score']} vs {syn_b['score']} affinity pairings: {names})."
+
+    return {
+        "budget_efficiency": {
+            "leader": b_leader,
+            "movie_a": {"budget_usd": a.budget, "popularity_per_10m_usd": round(eff_a, 4)},
+            "movie_b": {"budget_usd": b.budget, "popularity_per_10m_usd": round(eff_b, 4)},
+            "commentary": b_text,
+        },
+        "runtime_advantage": {
+            "leader": r_leader,
+            "movie_a": {"runtime_minutes": a.runtime, "band": band_a},
+            "movie_b": {"runtime_minutes": b.runtime, "band": band_b},
+            "commentary": r_text,
+        },
+        "genre_synergy": {
+            "leader": g_leader,
+            "movie_a": syn_a,
+            "movie_b": syn_b,
+            "commentary": g_text,
+        },
+    }
+
+
+@app.post("/api/compare", response_model=CompareResponse)
+def compare_movies(payload: CompareRequest):
+    a, b = payload.movie_a, payload.movie_b
+    probs = _mlp_probabilities([a, b])  # single batched inference for both movies
+    res_a, res_b = _build_prediction(a, probs[0]), _build_prediction(b, probs[1])
+    _log_predictions([a, b], [res_a, res_b])
+
+    prob_a, prob_b = res_a.probability, res_b.probability
+    delta = round(abs(prob_a - prob_b), 4)
+    if delta < 0.0001:
+        winner, margin = "tie", "Tie"
+    else:
+        winner = "movie_a" if prob_a > prob_b else "movie_b"
+        margin = "Narrow" if delta < 0.05 else ("Clear" if delta < 0.20 else "Decisive")
+    winner_title = None if winner == "tie" else (res_a.title if winner == "movie_a" else res_b.title)
+
+    breakdown = _compare_breakdown(a, b, prob_a, prob_b)
+    commentary = [breakdown[k]["commentary"] for k in ("budget_efficiency", "runtime_advantage", "genre_synergy")]
+    if winner == "tie":
+        summary = f"'{res_a.title}' and '{res_b.title}' are tied at {prob_a:.1%} popularity probability."
+    else:
+        summary = (
+            f"'{winner_title}' wins ({_side_label(winner)}) with {max(prob_a, prob_b):.1%} vs "
+            f"{min(prob_a, prob_b):.1%} popularity probability — a {margin.lower()} margin of "
+            f"{delta * 100:.1f} percentage points."
+        )
+
+    return CompareResponse(
+        winner=winner,
+        winner_title=winner_title,
+        probability_a=prob_a,
+        probability_b=prob_b,
+        delta_prob=delta,
+        margin=margin,
+        summary=summary,
+        breakdown=breakdown,
+        commentary=commentary,
+        movie_a=res_a,
+        movie_b=res_b,
+    )
+
+
+# ==========================================
+# [BE-4] PLATFORM INSIGHTS  ->  GET /api/analytics/summary
+# ==========================================
+@app.get("/api/analytics/summary")
+def analytics_summary(
+    min_probability: float = Query(0.5, ge=0.0, le=1.0, description="Predictions at/above this probability count as 'top-scoring' for the genre ranking"),
+    top_genres: int = Query(5, ge=1, le=19, description="How many genres to return"),
+):
+    """Aggregated stats over logged predictions. Results are cached in memory (30s TTL, invalidated on every new prediction)."""
+    return prediction_store.summary(min_probability=min_probability, top_genres=top_genres)
