@@ -198,7 +198,7 @@ class PredictionStore:
             logger.warning(f"Could not log prediction(s): {e}")
             return False
 
-    def history(self, limit: int = 50) -> List[Dict[str, Any]]:
+    def history(self, limit: int = 50, offset: int = 0) -> List[Dict[str, Any]]:
         """Return recent prediction records in the shape used by the dashboard."""
         self._ensure_backend()
         ph = self._ph
@@ -208,8 +208,8 @@ class PredictionStore:
             cur.execute(
                 f"SELECT id, title, release_year, runtime, budget, original_language, genres, "
                 f"predicted_probability, is_popular, created_at, model_architecture, poster_url "
-                f"FROM prediction_logs ORDER BY id DESC LIMIT {ph}",
-                (limit,),
+                f"FROM prediction_logs ORDER BY id DESC LIMIT {ph} OFFSET {ph}",
+                (limit, offset),
             )
             rows = cur.fetchall()
         finally:

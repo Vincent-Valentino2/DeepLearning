@@ -413,10 +413,14 @@ def delete_bookmark(title_or_id: str):
 
 
 @app.get("/api/predictions")
-def get_prediction_history(limit: int = Query(50, ge=1, le=200)):
+@app.get("/api/predictions/history")
+def get_prediction_history(
+    limit: int = Query(50, ge=1, le=200),
+    offset: int = Query(0, ge=0),
+):
     """Return recent genuine inference events for the dashboard history and audit table."""
     try:
-        rows = prediction_store.history(limit=limit)
+        rows = prediction_store.history(limit=limit, offset=offset)
         return {"predictions": rows, "total": len(rows)}
     except Exception as e:
         logger.error(f"Error fetching prediction history: {e}")
