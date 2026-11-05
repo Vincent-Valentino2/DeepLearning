@@ -21,17 +21,21 @@ jobs:
         uses: pnpm/action-setup@v3
         with:
           version: 9
+          package_json_file: frontend/package.json
 
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
           node-version: 22
           cache: 'pnpm'
+          cache-dependency-path: frontend/pnpm-lock.yaml
 
       - name: Install Dependencies
+        working-directory: frontend
         run: pnpm install --frozen-lockfile
 
       - name: Typecheck and Build Frontend
+        working-directory: frontend
         run: pnpm run build
 
   backend-ci:
@@ -70,15 +74,15 @@ jobs:
         uses: docker/build-push-action@v5
         with:
           context: .
-          file: ./Dockerfile.backend
+          file: ./backend/Dockerfile
           push: false
           tags: movie-backend:latest
 
       - name: Build Frontend Docker Image
         uses: docker/build-push-action@v5
         with:
-          context: .
-          file: ./Dockerfile.frontend
+          context: ./frontend
+          file: ./frontend/Dockerfile
           push: false
           tags: movie-frontend:latest
 

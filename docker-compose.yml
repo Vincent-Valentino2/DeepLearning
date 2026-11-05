@@ -4,8 +4,8 @@ services:
   # Container 1: Frontend (React + Vite + Tailwind via Nginx)
   frontend:
     build:
-      context: .
-      dockerfile: Dockerfile.frontend
+      context: ./frontend
+      dockerfile: Dockerfile
     container_name: movie_frontend
     restart: unless-stopped
     ports:
@@ -20,7 +20,7 @@ services:
   backend:
     build:
       context: .
-      dockerfile: Dockerfile.backend
+      dockerfile: backend/Dockerfile
     container_name: movie_backend
     restart: unless-stopped
     ports:
@@ -31,6 +31,8 @@ services:
     depends_on:
       database:
         condition: service_healthy
+    volumes:
+      - ./data:/app/data
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8001/api/health"]
       interval: 10s
@@ -53,7 +55,7 @@ services:
       POSTGRES_DB: movierec_db
     volumes:
       - pgdata:/var/lib/postgresql/data
-      - ./db/init.sql:/docker-entrypoint-initdb.d/init.sql:ro
+      - ./database/init.sql:/docker-entrypoint-initdb.d/init.sql:ro
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U deeplearning -d movierec_db"]
       interval: 10s

@@ -1,139 +1,125 @@
-# TMDB Movie Popularity & Recommendation Platform
+# Movie Popularity & Recommendation App
 
-> **Proyek Studi Kasus Midterm Exam (UTS) - Rapid Application Deployment via Containers & CI/CD**
+A web app for exploring movie information and estimating whether a film is likely to be popular. It uses a machine learning model with movie metadata such as genres, release year, runtime, language, and budget.
 
-Aplikasi sistem prediksi popularitas film dan kurasi rekomendasi film berbasis Machine Learning / Deep Learning (Multilayer Perceptron - MLP Classifier) dengan arsitektur **3-Tier Microservices Container (Frontend, Backend, Database)** dan otomasi **Continuous Integration & Continuous Deployment (CI/CD)**.
+The app includes:
 
----
+- Movie search and curated movie picks
+- Popularity predictions with feature explanations
+- Side-by-side movie comparison
+- Prediction history and analytics
+- A personal movie watchlist
 
-## 🏗️ 1. Arsitektur 3 Container (Bobot 50 Poin)
+## Project structure
 
-Aplikasi telah dirancang memenuhi kriteria minimal **3 container terisolasi** yang saling terhubung dalam satu bridge network (`app_network`):
+Each app layer has a dedicated directory and Docker Compose service. This keeps frontend, backend, and database changes easier to review and rebuild independently.
 
-```
-                        ┌───────────────────────────────────────────────┐
-                        │              Host Machine / Client            │
-                        └──────────────────────┬────────────────────────┘
-                                               │ HTTP :3000 (Local: 5174)
-                                               ▼
-┌────────────────────────────────────────────────────────────────────────────────────────┐
-│ Docker Network (app_network)                                                           │
-│                                                                                        │
-│   ┌──────────────────────────┐             ┌──────────────────────────┐                │
-│   │  Container 1: FRONTEND   │             │   Container 2: BACKEND   │                │
-│   │  React 19 + Vite         │  /api/*     │   FastAPI (Python 3.12)  │                │
-│   │  Tailwind CSS            ├────────────►│   Scikit-Learn MLP Model │                │
-│   │  Nginx Alpine Reverse    │             │   Port: 8001             │                │
-│   │  Port: 80 (Host: 3000)   │             │   Healthcheck: /api/heal.│                │
-│   └──────────────────────────┘             └────────────┬─────────────┘                │
-│                                                         │                              │
-│                                                         │ SQL (Port 5432)              │
-│                                                         ▼                              │
-│                                            ┌──────────────────────────┐                │
-│                                            │  Container 3: DATABASE   │                │
-│                                            │  PostgreSQL 16 Alpine    │                │
-│                                            │  Persistent Volume pgdata│                │
-│                                            │  Auto-migration init.sql │                │
-│                                            └──────────────────────────┘                │
-└────────────────────────────────────────────────────────────────────────────────────────┘
+```text
+.
+├── frontend/          # React, TypeScript, Vite, and Nginx
+├── backend/           # FastAPI API, prediction model, and backend Dockerfile
+├── database/          # PostgreSQL initialization SQL
+├── data/              # Sample data and local movie catalog files
+├── docker-compose.yml # Runs the app services together
+└── README.md
 ```
 
-1. **Container 1 (Frontend):**
-   - **Teknologi:** React 19, TypeScript, Vite, Tailwind CSS v4, Lucide Icons.
-   - **Multi-stage Build:** Dibuat menggunakan Node.js 22 Alpine, kemudian di-serve menggunakan Nginx Alpine ringan. Nginx juga bertindak sebagai reverse-proxy meneruskan request `/api/` ke container backend.
-2. **Container 2 (Backend REST API & ML):**
-   - **Teknologi:** Python 3.12, FastAPI, Uvicorn, Scikit-Learn, Pandas, NumPy, Joblib.
-   - **Fungsi:** Menyediakan API health check (`/api/health`), pencarian film TMDB (`/api/movies/search`), dan kalkulasi prediksi probabilitas popularitas (`/api/predict`) berbasis model neural network MLP v2.0.
-3. **Container 3 (Database):**
-   - **Teknologi:** PostgreSQL 16 Alpine dengan persistent Docker Volume (`pgdata`).
-   - **Fungsi:** Menyimpan log riwayat inferensi prediksi (`prediction_logs`) dan bookmark film favorit (`bookmarked_movies`). Diinisialisasi otomatis via `db/init.sql`.
+```text
+Browser ──> frontend (Nginx, port 3000)
+                │ /api requests
+                ▼
+            backend (FastAPI, port 8001)
+                │ prediction analytics
+                ▼
+            database (PostgreSQL, port 5432)
+```
 
----
+The frontend, backend, and database are separate containers. Compose connects them on a private network. PostgreSQL data is stored in a named Docker volume, while backend catalog and local SQLite files are kept in the host `data/` directory. The SQL in `database/init.sql` runs when PostgreSQL first initializes its data directory.
 
-## 🔄 2. Implementasi Pipeline CI/CD (Bobot 20 Poin)
+## What you need
 
-Konfigurasi workflow otomatis terletak pada [`.github/workflows/ci-cd.yml`](.github/workflows/ci-cd.yml) menggunakan **GitHub Actions**:
+### To run with Docker (recommended)
 
-* **Continuous Integration (CI):**
-  - **Frontend Check:** Linting, TypeScript check, dan kompilasi Vite (`pnpm run build`).
-  - **Backend Check:** Verifikasi environment Python 3.12, install requirements, serta validasi integritas model MLP Joblib.
-  - **Container Build Test:** Menggunakan Docker Buildx untuk memastikan `Dockerfile.frontend` dan `Dockerfile.backend` lolos proses build image tanpa error.
-* **Continuous Deployment (CD):**
-  - Berjalan otomatis setelah seluruh tahapan CI sukses di branch `main`.
-  - Mempersiapkan rilis deployment ke staging/production container.
+- Docker Desktop, or Docker Engine with the Docker Compose plugin
+- Git, to clone the repository
+- Available local ports: `3000`, `8001`, and `5432`
 
----
+Docker builds the frontend and backend images and starts PostgreSQL. Node.js and Python do not need to be installed on the host for this option.
 
-## 🚀 3. Panduan Menjalankan Aplikasi
+### To run in local development mode
 
-### Opsi A: Development Mode (Lokal tanpa Docker)
+- Node.js 22 or newer and pnpm 9
+- Python 3.12
+- PostgreSQL is optional for local development; prediction analytics can use the backend's SQLite fallback
 
-1. **Jalankan Backend (Terminal 1):**
-   ```bash
-   # Masuk virtualenv dan jalankan server FastAPI
-   backend/.venv/bin/uvicorn backend.main:app --host 127.0.0.1 --port 8001 --reload
-   ```
-   *Healthcheck backend:* `http://localhost:8001/api/health`
+## Start the app with Docker
 
-2. **Jalankan Frontend (Terminal 2):**
-   ```bash
-   pnpm install
-   pnpm run dev
-   ```
-   *Akses web browser:* `http://localhost:5174/`
-
----
-
-### Opsi B: Production Mode (3 Container via Docker Compose)
-
-Pastikan Docker Desktop / Podman telah berjalan di komputer Anda, lalu jalankan:
+From the repository root, build and start all services:
 
 ```bash
-# Build dan jalankan seluruh container (FE, BE, DB) di background
 docker compose up --build -d
+```
 
-# Cek status ketiga container
+Open the app at <http://localhost:3000>. The backend API documentation is at <http://localhost:8001/docs> and its health endpoint is <http://localhost:8001/api/health>.
+
+Useful commands:
+
+```bash
+# Show service status
 docker compose ps
 
-# Cek logs container
+# Follow logs from all services
 docker compose logs -f
-```
 
-* **Frontend:** Buka browser di `http://localhost:3000`
-* **Backend API Docs (Swagger):** `http://localhost:8001/docs`
-* **PostgreSQL:** Port `5432` (User: `deeplearning`, Database: `movierec_db`)
+# Follow logs from one service
+docker compose logs -f frontend
+docker compose logs -f backend
+docker compose logs -f database
 
-Untuk mematikan container:
-```bash
+# Rebuild and restart one service after changing it
+docker compose up --build -d frontend
+docker compose up --build -d backend
+
+# Start or recreate PostgreSQL after changing its Compose settings
+docker compose up -d database
+
+# Stop services and keep database data
 docker compose down
+
+# Stop services and permanently remove the PostgreSQL volume
+docker compose down -v
 ```
 
----
+`docker compose down -v` deletes PostgreSQL's stored data. Use `docker compose down` for normal shutdowns. The backend's `data/` files are stored separately on the host.
 
-## 📋 4. Panduan Push ke GitHub untuk Tim
+## Start in local development mode
 
-> [!IMPORTANT]
-> File dataset Kaggle (`.csv`) dan database lokal besar (`.db`) sudah otomatis di-ignore oleh `.gitignore` karena GitHub membatasi ukuran maksimal file **100MB**. Jangan pernah memaksa push file `.csv` atau `.db` mentah ke git.
+Run the backend and frontend in separate terminals from the repository root.
 
-Untuk melakukan push repositori ini ke GitHub kelompok:
+Terminal 1, start the API:
 
-1. Buat repository baru di GitHub (misal: `uts-deeplearning-cicd`).
-2. Sambungkan remote repository dan push:
-   ```bash
-   # Tambahkan remote repository tim Anda
-   git remote add origin https://github.com/<USERNAME_ATAU_ORG>/<NAMA_REPO>.git
+```bash
+python3.12 -m venv backend/.venv
+backend/.venv/bin/pip install -r backend/requirements.txt
+backend/.venv/bin/uvicorn backend.main:app --host 127.0.0.1 --port 8001 --reload
+```
 
-   # Push branch main
-   git push -u origin main
-   ```
+Terminal 2, start the web app:
 
----
+```bash
+cd frontend
+pnpm install
+pnpm dev
+```
 
-## 📹 5. Checklist Video Penjelasan (5 - 15 Menit) (20 Poin)
+Open <http://localhost:5174>. Vite proxies `/api` calls to the backend on port `8001`.
 
-Rekomendasi alur presentasi video:
-1. **Menit 0:00 - 02:00:** Perkenalan anggota kelompok dan deskripsi singkat aplikasi prediksi film.
-2. **Menit 02:00 - 05:00:** Penjelasan arsitektur 3 container (Nginx Frontend, FastAPI Backend, PostgreSQL Database) serta bedah file `Dockerfile` dan `docker-compose.yml`.
-3. **Menit 05:00 - 09:00:** Demonstrasi alur CI/CD pada tab **Actions** di GitHub (tunjukkan pipeline build test berjalan otomatis).
-4. **Menit 09:00 - 13:00:** Demonstrasi live aplikasi di browser (input parameter film, prediksi MLP keluar, pengecekan data di container).
-5. **Menit 13:00 - 15:00:** Kesimpulan dan penutup.
+## Main service responsibilities
+
+| Service | Directory | Responsibility |
+| --- | --- | --- |
+| Frontend | `frontend/` | Movie browsing, prediction forms, comparison, history, and watchlist UI |
+| Backend | `backend/` | FastAPI endpoints, model inference, movie search, and application logic |
+| Database | `database/` | PostgreSQL schema initialization; persistent database files are managed by Docker volume `pgdata` |
+
+Compose service names are `frontend`, `backend`, and `database`. Rebuild the frontend or backend with `docker compose up --build -d <service>` after changing its code. PostgreSQL uses the official image; its initialization script only runs when the data volume is first created.
