@@ -157,6 +157,40 @@ class PredictionStore:
         return "%s" if self._backend == "postgresql" else "?"
 
     # ------------------------------------------------------------------ #
+    # Health
+    # ------------------------------------------------------------------ #
+    def ping(self) -> Dict[str, Any]:
+        """Live connectivity probe for the health endpoint. Never raises.
+
+        Opens a fresh connection and runs ``SELECT 1`` so the result reflects
+        the database's state right now, not the backend chosen at startup.
+        """
+        configured = bool(self._database_url_value())
+        engine = "postgresql" if configured else "sqlite"
+        started = time.perf_counter()
+        error: Optional[str] = None
+        try:
+            conn = self._connect_pg() if configured else self._connect_sqlite()
+            try:
+                cur = conn.cursor()
+                cur.execute("SELECT 1")
+                cur.fetchone()
+            finally:
+                conn.close()
+            connected = True
+        except Exception as e:
+            connected = False
+            error = str(e).strip().splitlines()[0] if str(e).strip() else type(e).__name__
+        return {
+            "engine": engine,
+            "configured": configured,
+            "connected": connected,
+            "latency_ms": _round((time.perf_counter() - started) * 1000, 1),
+            "active_store": self._backend,
+            "error": error,
+        }
+
+    # ------------------------------------------------------------------ #
     # Writes
     # ------------------------------------------------------------------ #
     def log(self, entries: List[Dict[str, Any]]) -> bool:

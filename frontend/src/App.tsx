@@ -21,6 +21,8 @@ import {
 import { getPredictionHistory } from './api'
 import { MovieBattle } from './components/MovieBattle'
 import { AuditLogTable } from './components/PredictionHistory'
+import { EnvironmentStatusBar, ReleaseFooterInfo } from './components/EnvironmentStatus'
+import { useEnvironmentHealth } from './hooks/useEnvironmentHealth'
 import type { MovieCatalogItem, PredictionLog, PredictionResult } from './types'
 
 interface DatasetStatus {
@@ -452,6 +454,7 @@ export default function App() {
 
   // Backend & Pipeline states
   const [backendStatus, setBackendStatus] = useState<'connected' | 'checking' | 'disconnected'>('checking')
+  const environmentHealth = useEnvironmentHealth()
   const [datasetInfo, setDatasetInfo] = useState<DatasetStatus | null>(null)
   const [isLoading, setIsLoading] = useState<boolean>(false)
   const [isProcessingDataset, setIsProcessingDataset] = useState(false)
@@ -829,23 +832,9 @@ export default function App() {
                 {bookmarks.length}
               </span>
             </button>
-
-            <div className="flex items-center gap-1.5 border-l border-[#e5e2da] pl-3">
-              <span
-                className={`w-2 h-2 rounded-full ${
-                  backendStatus === 'connected'
-                    ? 'bg-emerald-600'
-                    : backendStatus === 'checking'
-                    ? 'bg-amber-500'
-                    : 'bg-rose-500'
-                }`}
-              />
-              <span className="text-[11px] hidden sm:inline">
-                {backendStatus === 'connected' ? 'FastAPI :8001 Ready' : 'API Standalone'}
-              </span>
-            </div>
           </div>
         </div>
+        <EnvironmentStatusBar health={environmentHealth} />
       </header>
 
       {/* Main Body */}
@@ -1497,7 +1486,8 @@ export default function App() {
       {/* Footer */}
       <footer className="border-t border-[#e5e2da] bg-white py-6 text-center text-xs text-[#78716c] space-y-1">
         <p>TMDB Movie Popularity Classifier &bull; Multi-Layer Perceptron (MLP)</p>
-        <p className="text-[11px] font-mono text-[#a8a29e]">FastAPI (:8001) &bull; Vite + React + TS (:5174)</p>
+        <p className="text-[11px] font-mono text-[#a8a29e]">Nginx / Vite (frontend) &bull; FastAPI (backend) &bull; PostgreSQL (database)</p>
+        <ReleaseFooterInfo health={environmentHealth} />
       </footer>
 
       {/* WATCHLIST / BOOKMARK DRAWER MODAL */}
