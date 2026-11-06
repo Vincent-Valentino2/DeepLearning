@@ -17,6 +17,7 @@ from backend.data_processor import (
     TOP_LANGUAGES,
 )
 from backend.prediction_store import prediction_store
+from backend.bookmark_store import bookmark_store
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("TMDB_API")
@@ -290,7 +291,6 @@ def get_metadata_options():
 # ==========================================
 # BOOKMARKS & WATCHLIST API
 # ==========================================
-BOOKMARKS_DB_PATH = os.path.join(DATA_DIR, "bookmarks.db")
 PREDICTION_LOGS_DB_PATH = os.path.join(DATA_DIR, "prediction_history.db")
 
 def init_prediction_logs_table():
@@ -339,124 +339,50 @@ def record_prediction(payload: MoviePredictionRequest, result: MoviePredictionRe
         logger.warning(f"Failed to record prediction audit event: {e}")
 
 
-def init_bookmarks_table():
-    try:
-        conn = sqlite3.connect(BOOKMARKS_DB_PATH)
-        c = conn.cursor()
-        c.execute("""
-            CREATE TABLE IF NOT EXISTS bookmarked_movies (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                title TEXT NOT NULL UNIQUE,
-                release_year INTEGER,
-                runtime INTEGER,
-                genres TEXT,
-                poster_url TEXT,
-                vote_average REAL,
-                original_language TEXT,
-                tagline TEXT,
-                overview TEXT,
-                added_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-            )
-        """)
-        # Add fields to existing databases created before bookmark details were stored.
-        c.execute("PRAGMA table_info(bookmarked_movies)")
-        columns = {row[1] for row in c.fetchall()}
-        for column in ("tagline", "overview"):
-            if column not in columns:
-                c.execute(f"ALTER TABLE bookmarked_movies ADD COLUMN {column} TEXT")
-        conn.commit()
-        conn.close()
-    except Exception as e:
-        logger.warning(f"Failed to init bookmarks table: {e}")
-
-init_bookmarks_table()
 init_prediction_logs_table()
 
 class BookmarkPayload(BaseModel):
+    movie_id: int = Field(gt=0)
     title: str
-    release_year: Optional[int] = None
-    runtime: Optional[int] = None
-    genres: Optional[List[str]] = []
-    poster_url: Optional[str] = None
+    poster_path: Optional[str] = None
+    release_date: Optional[str] = None
     vote_average: Optional[float] = None
-    original_language: Optional[str] = "en"
-    tagline: Optional[str] = None
-    overview: Optional[str] = None
 
 @app.get("/api/bookmarks")
 def get_bookmarks():
-    init_bookmarks_table()
     try:
-        conn = sqlite3.connect(BOOKMARKS_DB_PATH)
-        conn.row_factory = sqlite3.Row
-        c = conn.cursor()
-        c.execute("SELECT * FROM bookmarked_movies ORDER BY id DESC")
-        rows = c.fetchall()
-        results = []
-        for r in rows:
-            genres_list = [g.strip() for g in r["genres"].split(",") if g.strip()] if r["genres"] else []
-            results.append({
-                "id": r["id"],
-                "title": r["title"],
-                "release_year": r["release_year"],
-                "runtime": r["runtime"],
-                "genres": genres_list,
-                "poster_url": r["poster_url"],
-                "vote_average": r["vote_average"],
-                "original_language": r["original_language"],
-                "tagline": r["tagline"],
-                "overview": r["overview"],
-                "added_at": r["added_at"],
-            })
-        conn.close()
+        results = bookmark_store.list()
         return {"bookmarks": results, "total": len(results)}
     except Exception as e:
         logger.error(f"Error fetching bookmarks: {e}")
-        return {"bookmarks": [], "total": 0}
+        raise HTTPException(status_code=500, detail="Bookmarks are unavailable")
 
 @app.post("/api/bookmarks")
 def add_bookmark(item: BookmarkPayload):
-    init_bookmarks_table()
     try:
-        conn = sqlite3.connect(BOOKMARKS_DB_PATH)
-        c = conn.cursor()
-        genres_str = ", ".join(item.genres) if item.genres else ""
-        c.execute("""
-            INSERT INTO bookmarked_movies (title, release_year, runtime, genres, poster_url, vote_average, original_language, tagline, overview)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-            ON CONFLICT(title) DO UPDATE SET
-                release_year=excluded.release_year,
-                runtime=excluded.runtime,
-                genres=excluded.genres,
-                poster_url=excluded.poster_url,
-                vote_average=excluded.vote_average,
-                original_language=excluded.original_language,
-                tagline=excluded.tagline,
-                overview=excluded.overview
-        """, (item.title, item.release_year, item.runtime, genres_str, item.poster_url, item.vote_average, item.original_language, item.tagline, item.overview))
-        conn.commit()
-        conn.close()
+        inserted = bookmark_store.add(item.model_dump())
+        if not inserted:
+            raise HTTPException(status_code=409, detail={
+                "status": "duplicate",
+                "message": f"'{item.title}' is already bookmarked",
+            })
         return {"status": "success", "message": f"'{item.title}' bookmarked successfully"}
     except Exception as e:
         logger.error(f"Error adding bookmark: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail="Could not save bookmark")
 
-@app.delete("/api/bookmarks/{title_or_id}")
-def delete_bookmark(title_or_id: str):
-    init_bookmarks_table()
+@app.delete("/api/bookmarks/{movie_id}")
+def delete_bookmark(movie_id: int):
     try:
-        conn = sqlite3.connect(BOOKMARKS_DB_PATH)
-        c = conn.cursor()
-        if title_or_id.isdigit():
-            c.execute("DELETE FROM bookmarked_movies WHERE id = ?", (int(title_or_id),))
-        else:
-            c.execute("DELETE FROM bookmarked_movies WHERE LOWER(title) = LOWER(?)", (title_or_id.strip(),))
-        conn.commit()
-        conn.close()
+        removed = bookmark_store.delete(movie_id)
+        if not removed:
+            raise HTTPException(status_code=404, detail="Bookmark not found")
         return {"status": "success", "message": "Bookmark removed"}
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error(f"Error deleting bookmark: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail="Could not remove bookmark")
 
 
 @app.get("/api/predictions")
