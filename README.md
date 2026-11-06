@@ -1,5 +1,7 @@
 # Movie Popularity & Recommendation App
 
+[![CI/CD Pipeline](https://github.com/Vincent-Valentino2/DeepLearning/actions/workflows/ci-cd.yml/badge.svg?branch=main)](https://github.com/Vincent-Valentino2/DeepLearning/actions/workflows/ci-cd.yml)
+
 A web app for exploring movie information and estimating whether a film is likely to be popular. It uses a machine learning model with movie metadata such as genres, release year, runtime, language, and budget.
 
 The app includes:
@@ -9,6 +11,7 @@ The app includes:
 - Side-by-side movie comparison
 - Prediction history and analytics
 - A personal movie watchlist
+- A live environment status bar for the frontend, backend, and database containers
 
 ## Project structure
 
@@ -58,6 +61,12 @@ From the repository root, build and start all services:
 
 ```bash
 docker compose up --build -d
+```
+
+To show the deployed commit and release tag in the UI footer, pass them as build arguments:
+
+```bash
+GIT_COMMIT_SHA=$(git rev-parse HEAD) RELEASE_ENV=staging docker compose up --build -d
 ```
 
 Open the app at <http://localhost:3000>. The backend API documentation is at <http://localhost:8001/docs> and its health endpoint is <http://localhost:8001/api/health>.
@@ -123,3 +132,28 @@ Open <http://localhost:5174>. Vite proxies `/api` calls to the backend on port `
 | Database | `database/` | PostgreSQL schema initialization; persistent database files are managed by Docker volume `pgdata` |
 
 Compose service names are `frontend`, `backend`, and `database`. Rebuild the frontend or backend with `docker compose up --build -d <service>` after changing its code. PostgreSQL uses the official image; its initialization script only runs when the data volume is first created.
+
+## Environment health and release status
+
+The header shows a status bar that polls every 10 seconds:
+
+| Indicator | Source |
+| --- | --- |
+| Frontend | The server that delivered the page (Nginx in Docker, Vite in dev) and its port |
+| Backend | Round-trip latency of `GET /api/health` |
+| PostgreSQL | `database` block of `/api/health`, which runs `SELECT 1` on a fresh connection |
+
+`/api/health` returns `"status": "degraded"` with HTTP 200 when the API is up but the database is unreachable, so the backend container is not restarted for a database outage. Its `release` block reports the commit SHA and environment the backend was built with.
+
+The footer shows the commit the frontend was built from (linked to GitHub), the release environment tag, and the live CI/CD badge. Without build arguments, local builds use the checkout's current commit and `development` (dev server) or `production` (build) as the tag.
+
+## CI/CD and branch protection
+
+[`.github/workflows/ci-cd.yml`](.github/workflows/ci-cd.yml) runs on every push and pull request to `main`:
+
+1. **Frontend Lint & Build Check**: typecheck and production build
+2. **Backend Syntax & Health Verification**: import check and backend unit tests
+3. **Docker Multi-Container Build Verification**: builds both images, starts all three containers with Compose, and checks that the frontend, `/api/health`, and PostgreSQL are reachable
+4. **Automated Deployment Stage**: runs only on pushes to `main`
+
+`main` is protected: changes go through a pull request, and the three CI checks above must pass before merging.

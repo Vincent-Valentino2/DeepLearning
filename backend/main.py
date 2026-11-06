@@ -212,11 +212,38 @@ def root():
         "version": "1.2.0"
     }
 
+def _git_commit_sha() -> str:
+    """Commit SHA baked in at build time, falling back to the local checkout."""
+    sha = os.getenv("GIT_COMMIT_SHA", "").strip()
+    if sha:
+        return sha
+    try:
+        import subprocess
+        return subprocess.run(
+            ["git", "rev-parse", "HEAD"], cwd=BASE_DIR,
+            capture_output=True, text=True, timeout=2, check=True,
+        ).stdout.strip() or "unknown"
+    except Exception:
+        return "unknown"
+
+
+RELEASE_INFO = {
+    "commit_sha": _git_commit_sha(),
+    "environment": os.getenv("RELEASE_ENV", "development"),
+    "version": app.version,
+}
+
+
 @app.get("/api/health")
 def health_check():
     has_model = "model" in model_cache
+    database = prediction_store.ping()
     return {
-        "status": "healthy",
+        # The API itself is up; a database outage is reported as "degraded"
+        # with HTTP 200 so container healthchecks don't restart the backend.
+        "status": "healthy" if database["connected"] else "degraded",
+        "database": database,
+        "release": RELEASE_INFO,
         "model_loaded": has_model,
         "framework": "FastAPI + scikit-learn MLP (Multi-Layer Perceptron)",
         "port": 8001,
