@@ -6,6 +6,9 @@ services:
     build:
       context: ./frontend
       dockerfile: Dockerfile
+      args:
+        GIT_COMMIT_SHA: ${GIT_COMMIT_SHA:-unknown}
+        RELEASE_ENV: ${RELEASE_ENV:-local}
     container_name: movie_frontend
     restart: unless-stopped
     ports:
@@ -21,6 +24,9 @@ services:
     build:
       context: .
       dockerfile: backend/Dockerfile
+      args:
+        GIT_COMMIT_SHA: ${GIT_COMMIT_SHA:-unknown}
+        RELEASE_ENV: ${RELEASE_ENV:-local}
     container_name: movie_backend
     restart: unless-stopped
     ports:

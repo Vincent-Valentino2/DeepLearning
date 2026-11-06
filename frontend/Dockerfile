@@ -10,6 +10,12 @@ RUN corepack enable && corepack prepare pnpm@latest --activate
 COPY package.json pnpm-lock.yaml ./
 RUN pnpm install --frozen-lockfile
 
+# Release metadata baked into the bundle (shown in the UI footer)
+ARG GIT_COMMIT_SHA=unknown
+ARG RELEASE_ENV=production
+ENV VITE_GIT_COMMIT_SHA=$GIT_COMMIT_SHA \
+    VITE_RELEASE_ENV=$RELEASE_ENV
+
 # Copy source and build
 COPY . .
 RUN pnpm run build
