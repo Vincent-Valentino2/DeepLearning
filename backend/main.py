@@ -12,6 +12,7 @@ import pandas as pd
 import joblib
 
 from backend.data_processor import (
+    confidence_level,
     extract_cinephile_features,
     STANDARD_GENRES,
     TOP_LANGUAGES,
@@ -83,7 +84,7 @@ def load_trained_model(force: bool = False):
                 artifact = joblib.load(MODEL_PATH)
                 model_cache = artifact
                 _last_model_mtime = mtime
-                logger.info(f"Loaded trained MLP model v2.0 from {MODEL_PATH} (features: {artifact.get('feature_count', 'auto')})")
+                logger.info(f"Loaded trained MLP model {artifact.get('model_version', 'unknown')} from {MODEL_PATH} (features: {artifact.get('feature_count', 'auto')})")
         except Exception as e:
             logger.error(f"Failed to load model from {MODEL_PATH}: {e}")
             if force:
@@ -251,7 +252,7 @@ def health_check():
         "features_used": ["genres", "release_year", "runtime", "original_language", "budget"],
         "excluded_features": ["popularity", "vote_count", "vote_average"],
         "target": "Binary Classification (Top 25% Popular vs Kurang Populer)",
-        "popularity_threshold": model_cache.get("popularity_threshold", 3.389) if has_model else "Dynamic 75th percentile"
+        "popularity_threshold": model_cache.get("popularity_threshold") if has_model else "Dynamic 75th percentile"
     }
 
 @app.get("/api/data/status")
@@ -286,7 +287,7 @@ def dataset_status():
         "catalog_entries_count": total_indexed,
         "model_trained": has_model,
         "model_metrics": metrics,
-        "popularity_threshold_75th": model_cache.get("popularity_threshold", 3.389)
+        "popularity_threshold_75th": model_cache.get("popularity_threshold")
     }
 
 @app.get("/api/movies/search")
@@ -468,7 +469,7 @@ def _build_prediction(payload: MoviePredictionRequest, prob: Optional[float]) ->
         else:
             poster_url = payload.poster_path
 
-    model_name = "Multi-Layer Perceptron (MLP) v2.0 - Cinephile Weights"
+    model_name = "Multi-Layer Perceptron (MLP) v2.1 - Cinephile Weights"
 
     insights = []
     input_genres = set(payload.genres)
@@ -560,11 +561,10 @@ def _build_prediction(payload: MoviePredictionRequest, prob: Optional[float]) ->
             base_score += 0.20
 
         prob = max(0.05, min(0.99, base_score))
-        model_name = "Multi-Layer Perceptron (MLP) v2.0 - Cinephile Heuristic"
+        model_name = "Heuristic fallback (model unavailable)"
 
     is_popular = bool(prob >= 0.50)
-    diff = abs(prob - 0.50)
-    confidence = "High" if diff >= 0.25 else ("Moderate" if diff >= 0.10 else "Low (Borderline)")
+    confidence = confidence_level(prob)
 
     response = MoviePredictionResponse(
         title=payload.title or "Untitled Film",

@@ -1,0 +1,175 @@
+{
+  "model_version": "2.1.0-cinephile",
+  "seed": 42,
+  "sklearn_version": "1.9.1",
+  "data": {
+    "candidate_pool": 312676,
+    "sample": 35000,
+    "train_real": 28000,
+    "train_anchor_rows": 144,
+    "train_total": 28144,
+    "internal_validation": 2814,
+    "test": 7000,
+    "train_positive_rate": 0.25387293916998294,
+    "test_positive_rate": 0.25
+  },
+  "popularity_threshold": 2.102,
+  "feature_count": 62,
+  "test": {
+    "accuracy": 0.8062857142857143,
+    "precision": 0.6661045531197302,
+    "recall": 0.4514285714285714,
+    "f1": 0.5381471389645777,
+    "roc_auc": 0.8192443537414965,
+    "confusion_matrix": {
+      "tn": 4854,
+      "fp": 396,
+      "fn": 960,
+      "tp": 790
+    }
+  },
+  "train": {
+    "accuracy": 0.8180784536668562,
+    "precision": 0.7060858945654387,
+    "recall": 0.4855143456962911,
+    "f1": 0.5753856360922209,
+    "roc_auc": 0.8415311989097685,
+    "confusion_matrix": {
+      "tn": 19555,
+      "fp": 1444,
+      "fn": 3676,
+      "tp": 3469
+    }
+  },
+  "confidence": {
+    "High": {
+      "share": 0.635,
+      "count": 4445,
+      "accuracy": 0.8974128233970754
+    },
+    "Moderate": {
+      "share": 0.22471428571428573,
+      "count": 1573,
+      "accuracy": 0.7113795295613478
+    },
+    "Low (Borderline)": {
+      "share": 0.1402857142857143,
+      "count": 982,
+      "accuracy": 0.5458248472505092
+    }
+  },
+  "errors_by_group": {
+    "era": {
+      "1985-2004": {
+        "count": 1336,
+        "positive_rate": 0.2836826347305389,
+        "accuracy": 0.7971556886227545,
+        "recall": 0.5118733509234829,
+        "false_negative": 185,
+        "false_positive": 86
+      },
+      "< 1985": {
+        "count": 1775,
+        "positive_rate": 0.2264788732394366,
+        "accuracy": 0.8174647887323944,
+        "recall": 0.4079601990049751,
+        "false_negative": 238,
+        "false_positive": 86
+      },
+      ">= 2005": {
+        "count": 3889,
+        "positive_rate": 0.24916430959115454,
+        "accuracy": 0.804319876574955,
+        "recall": 0.4458204334365325,
+        "false_negative": 537,
+        "false_positive": 224
+      }
+    },
+    "language": {
+      "Asia Timur": {
+        "count": 766,
+        "positive_rate": 0.28720626631853785,
+        "accuracy": 0.7780678851174935,
+        "recall": 0.37272727272727274,
+        "false_negative": 138,
+        "false_positive": 32
+      },
+      "English": {
+        "count": 3412,
+        "positive_rate": 0.2933763188745604,
+        "accuracy": 0.7863423212192263,
+        "recall": 0.5614385614385614,
+        "false_negative": 439,
+        "false_positive": 290
+      },
+      "Eropa Barat": {
+        "count": 1283,
+        "positive_rate": 0.24473889321901793,
+        "accuracy": 0.7981293842556508,
+        "recall": 0.3248407643312102,
+        "false_negative": 212,
+        "false_positive": 47
+      },
+      "Lainnya": {
+        "count": 1272,
+        "positive_rate": 0.14072327044025157,
+        "accuracy": 0.8687106918238994,
+        "recall": 0.2011173184357542,
+        "false_negative": 143,
+        "false_positive": 24
+      },
+      "Slavia": {
+        "count": 267,
+        "positive_rate": 0.1348314606741573,
+        "accuracy": 0.8838951310861424,
+        "recall": 0.2222222222222222,
+        "false_negative": 28,
+        "false_positive": 3
+      }
+    },
+    "budget": {
+      "budget 0 / kosong": {
+        "count": 6457,
+        "positive_rate": 0.22285891280780548,
+        "accuracy": 0.8076506117391977,
+        "recall": 0.35510771369006255,
+        "false_negative": 928,
+        "false_positive": 314
+      },
+      "budget tercatat": {
+        "count": 543,
+        "positive_rate": 0.572744014732965,
+        "accuracy": 0.7900552486187845,
+        "recall": 0.8971061093247589,
+        "false_negative": 32,
+        "false_positive": 82
+      }
+    }
+  },
+  "training": {
+    "n_iter": 8,
+    "best_iteration": 2,
+    "best_validation_accuracy": 0.8255772646536412,
+    "loss_curve": [
+      0.4617614913581208,
+      0.4178921839532366,
+      0.4080427697503413,
+      0.40308122233496724,
+      0.3982107380215869,
+      0.39450814737482026,
+      0.38991910022421106,
+      0.3862125888728946
+    ],
+    "validation_accuracy": [
+      0.8159857904085257,
+      0.8255772646536412,
+      0.8220248667850799,
+      0.8188277087033747,
+      0.8248667850799289,
+      0.816696269982238,
+      0.8216696269982238,
+      0.8134991119005328
+    ],
+    "trainable_parameters": 18433
+  }
+}

@@ -133,6 +133,20 @@ Open <http://localhost:5174>. Vite proxies `/api` calls to the backend on port `
 
 Compose service names are `frontend`, `backend`, and `database`. Rebuild the frontend or backend with `docker compose up --build -d <service>` after changing its code. PostgreSQL uses the official image; its initialization script only runs when the data volume is first created.
 
+## Model training and evaluation
+
+The model is a scikit-learn MLP (62 features, layers 128-64-32). Training is reproducible: the candidate pool is deduplicated, sampled with seed 42, split 80/20 with stratification, and the label threshold, scalers, and curated anchor films come from the training split only.
+
+```bash
+# Retrain and write backend/models/mlp_model.joblib + backend/models/evaluation.json
+backend/.venv/bin/python -m backend.data_processor
+
+# Ablations, hyperparameter variants, and baselines over 5 seeds -> backend/models/experiments.json
+backend/.venv/bin/python -m backend.experiments
+```
+
+Both commands need the local catalog `data/movies.db` (built from the Kaggle CSV by `backend/build_index.py`). `scikit-learn` is pinned to the version that serialized the model.
+
 ## Environment health and release status
 
 The header shows a status bar that polls every 10 seconds:
