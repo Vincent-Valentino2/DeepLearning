@@ -4,7 +4,7 @@ import json
 import sqlite3
 import logging
 from typing import List, Optional, Dict, Any
-from fastapi import FastAPI, HTTPException, Query
+from fastapi import FastAPI, HTTPException, Path, Query
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 import numpy as np
@@ -213,11 +213,38 @@ def root():
         "version": "1.2.0"
     }
 
+def _git_commit_sha() -> str:
+    """Commit SHA baked in at build time, falling back to the local checkout."""
+    sha = os.getenv("GIT_COMMIT_SHA", "").strip()
+    if sha:
+        return sha
+    try:
+        import subprocess
+        return subprocess.run(
+            ["git", "rev-parse", "HEAD"], cwd=BASE_DIR,
+            capture_output=True, text=True, timeout=2, check=True,
+        ).stdout.strip() or "unknown"
+    except Exception:
+        return "unknown"
+
+
+RELEASE_INFO = {
+    "commit_sha": _git_commit_sha(),
+    "environment": os.getenv("RELEASE_ENV", "development"),
+    "version": app.version,
+}
+
+
 @app.get("/api/health")
 def health_check():
     has_model = "model" in model_cache
+    database = prediction_store.ping()
     return {
-        "status": "healthy",
+        # The API itself is up; a database outage is reported as "degraded"
+        # with HTTP 200 so container healthchecks don't restart the backend.
+        "status": "healthy" if database["connected"] else "degraded",
+        "database": database,
+        "release": RELEASE_INFO,
         "model_loaded": has_model,
         "framework": "FastAPI + scikit-learn MLP (Multi-Layer Perceptron)",
         "port": 8001,
@@ -291,55 +318,40 @@ def get_metadata_options():
 # ==========================================
 # BOOKMARKS & WATCHLIST API
 # ==========================================
-PREDICTION_LOGS_DB_PATH = os.path.join(DATA_DIR, "prediction_history.db")
+BOOKMARKS_DB_PATH = os.path.join(DATA_DIR, "bookmarks.db")
 
-def init_prediction_logs_table():
-    """Create a lightweight local audit store used by the dashboard history views."""
+
+def init_bookmarks_table():
     try:
-        conn = sqlite3.connect(PREDICTION_LOGS_DB_PATH)
-        conn.execute("""
-            CREATE TABLE IF NOT EXISTS prediction_logs (
+        conn = sqlite3.connect(BOOKMARKS_DB_PATH)
+        c = conn.cursor()
+        c.execute("""
+            CREATE TABLE IF NOT EXISTS bookmarked_movies (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
-                title TEXT NOT NULL,
-                probability REAL NOT NULL,
-                prediction TEXT NOT NULL,
-                is_popular INTEGER NOT NULL,
-                model_architecture TEXT NOT NULL,
+                title TEXT NOT NULL UNIQUE,
                 release_year INTEGER,
                 runtime INTEGER,
-                budget REAL,
-                original_language TEXT,
                 genres TEXT,
                 poster_url TEXT,
-                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                vote_average REAL,
+                original_language TEXT,
+                tagline TEXT,
+                overview TEXT,
+                added_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )
         """)
+        # Add fields to existing databases created before bookmark details were stored.
+        c.execute("PRAGMA table_info(bookmarked_movies)")
+        columns = {row[1] for row in c.fetchall()}
+        for column in ("tagline", "overview"):
+            if column not in columns:
+                c.execute(f"ALTER TABLE bookmarked_movies ADD COLUMN {column} TEXT")
         conn.commit()
         conn.close()
     except Exception as e:
-        logger.warning(f"Failed to initialize prediction history: {e}")
+        logger.warning(f"Failed to init bookmarks table: {e}")
 
-def record_prediction(payload: MoviePredictionRequest, result: MoviePredictionResponse):
-    """Best-effort audit logging; inference should still succeed if storage is unavailable."""
-    try:
-        conn = sqlite3.connect(PREDICTION_LOGS_DB_PATH)
-        conn.execute("""
-            INSERT INTO prediction_logs (
-                title, probability, prediction, is_popular, model_architecture,
-                release_year, runtime, budget, original_language, genres, poster_url
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        """, (
-            result.title, result.probability, result.prediction, int(result.is_popular),
-            result.model_architecture, payload.release_year, payload.runtime, payload.budget,
-            payload.original_language, ", ".join(payload.genres), result.poster_url,
-        ))
-        conn.commit()
-        conn.close()
-    except Exception as e:
-        logger.warning(f"Failed to record prediction audit event: {e}")
-
-
-init_prediction_logs_table()
+init_bookmarks_table()
 
 class BookmarkPayload(BaseModel):
     movie_id: int = Field(gt=0)
@@ -386,20 +398,33 @@ def delete_bookmark(movie_id: int):
 
 
 @app.get("/api/predictions")
-def get_prediction_history(limit: int = Query(50, ge=1, le=200)):
+@app.get("/api/predictions/history")
+def get_prediction_history(
+    limit: int = Query(50, ge=1, le=200),
+    offset: int = Query(0, ge=0),
+):
     """Return recent genuine inference events for the dashboard history and audit table."""
-    init_prediction_logs_table()
     try:
-        conn = sqlite3.connect(PREDICTION_LOGS_DB_PATH)
-        conn.row_factory = sqlite3.Row
-        rows = conn.execute(
-            "SELECT * FROM prediction_logs ORDER BY id DESC LIMIT ?", (limit,)
-        ).fetchall()
-        conn.close()
-        return {"predictions": [dict(row) for row in rows], "total": len(rows)}
+        rows = prediction_store.history(limit=limit, offset=offset)
+        return {"predictions": rows, "total": len(rows)}
     except Exception as e:
         logger.error(f"Error fetching prediction history: {e}")
         raise HTTPException(status_code=500, detail="Prediction history is unavailable")
+
+
+@app.delete("/api/predictions/history/{prediction_id}")
+def delete_prediction_history(prediction_id: int = Path(..., ge=1)):
+    """Delete one prediction log entry by its database ID."""
+    try:
+        deleted = prediction_store.delete(prediction_id)
+        if not deleted:
+            raise HTTPException(status_code=404, detail="Prediction history entry not found")
+        return {"status": "success", "deleted_id": prediction_id}
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error deleting prediction history entry {prediction_id}: {e}")
+        raise HTTPException(status_code=500, detail="Prediction history entry could not be deleted")
 
 
 
@@ -561,7 +586,6 @@ def _build_prediction(payload: MoviePredictionRequest, prob: Optional[float]) ->
         tagline=payload.tagline,
         overview=payload.overview,
     )
-    record_prediction(payload, response)
     return response
 
 
@@ -578,6 +602,8 @@ def _log_predictions(payloads: List[MoviePredictionRequest], results: List[Movie
                 "genres": p.genres,
                 "probability": r.probability,
                 "is_popular": r.is_popular,
+                "model_architecture": r.model_architecture,
+                "poster_url": r.poster_url,
             }
             for p, r in zip(payloads, results)
         ])

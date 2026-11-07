@@ -45,7 +45,9 @@ CREATE TABLE IF NOT EXISTS prediction_logs (
     genres TEXT,
     predicted_probability FLOAT NOT NULL,
     is_popular BOOLEAN NOT NULL,
-    created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+    model_architecture TEXT,
+    poster_url TEXT
 )
 """
 
@@ -60,13 +62,20 @@ CREATE TABLE IF NOT EXISTS prediction_logs (
     genres TEXT,
     predicted_probability REAL NOT NULL,
     is_popular BOOLEAN NOT NULL,
-    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    model_architecture TEXT,
+    poster_url TEXT
 )
 """
 
+_PG_MIGRATIONS = (
+    "ALTER TABLE prediction_logs ADD COLUMN IF NOT EXISTS model_architecture TEXT",
+    "ALTER TABLE prediction_logs ADD COLUMN IF NOT EXISTS poster_url TEXT",
+)
+
 _INSERT_COLUMNS = (
     "title, release_year, runtime, budget, original_language, "
-    "genres, predicted_probability, is_popular"
+    "genres, predicted_probability, is_popular, model_architecture, poster_url"
 )
 
 
@@ -114,6 +123,8 @@ class PredictionStore:
                     try:
                         cur = conn.cursor()
                         cur.execute(_PG_DDL)
+                        for statement in _PG_MIGRATIONS:
+                            cur.execute(statement)
                         conn.commit()
                     finally:
                         conn.close()
@@ -125,6 +136,10 @@ class PredictionStore:
             conn = self._connect_sqlite()
             try:
                 conn.execute(_SQLITE_DDL)
+                columns = {row[1] for row in conn.execute("PRAGMA table_info(prediction_logs)")}
+                for name in ("model_architecture", "poster_url"):
+                    if name not in columns:
+                        conn.execute(f"ALTER TABLE prediction_logs ADD COLUMN {name} TEXT")
                 conn.commit()
             finally:
                 conn.close()
@@ -142,6 +157,40 @@ class PredictionStore:
         return "%s" if self._backend == "postgresql" else "?"
 
     # ------------------------------------------------------------------ #
+    # Health
+    # ------------------------------------------------------------------ #
+    def ping(self) -> Dict[str, Any]:
+        """Live connectivity probe for the health endpoint. Never raises.
+
+        Opens a fresh connection and runs ``SELECT 1`` so the result reflects
+        the database's state right now, not the backend chosen at startup.
+        """
+        configured = bool(self._database_url_value())
+        engine = "postgresql" if configured else "sqlite"
+        started = time.perf_counter()
+        error: Optional[str] = None
+        try:
+            conn = self._connect_pg() if configured else self._connect_sqlite()
+            try:
+                cur = conn.cursor()
+                cur.execute("SELECT 1")
+                cur.fetchone()
+            finally:
+                conn.close()
+            connected = True
+        except Exception as e:
+            connected = False
+            error = str(e).strip().splitlines()[0] if str(e).strip() else type(e).__name__
+        return {
+            "engine": engine,
+            "configured": configured,
+            "connected": connected,
+            "latency_ms": _round((time.perf_counter() - started) * 1000, 1),
+            "active_store": self._backend,
+            "error": error,
+        }
+
+    # ------------------------------------------------------------------ #
     # Writes
     # ------------------------------------------------------------------ #
     def log(self, entries: List[Dict[str, Any]]) -> bool:
@@ -153,7 +202,7 @@ class PredictionStore:
             ph = self._ph
             sql = (
                 f"INSERT INTO prediction_logs ({_INSERT_COLUMNS}) "
-                f"VALUES ({', '.join([ph] * 8)})"
+                f"VALUES ({', '.join([ph] * 10)})"
             )
             rows = [
                 (
@@ -165,6 +214,8 @@ class PredictionStore:
                     ", ".join(e.get("genres") or []),
                     float(e["probability"]),
                     bool(e["is_popular"]),
+                    str(e.get("model_architecture") or "Multi-Layer Perceptron (MLP)"),
+                    e.get("poster_url"),
                 )
                 for e in entries
             ]
@@ -180,6 +231,55 @@ class PredictionStore:
         except Exception as e:
             logger.warning(f"Could not log prediction(s): {e}")
             return False
+
+    def history(self, limit: int = 50, offset: int = 0) -> List[Dict[str, Any]]:
+        """Return recent prediction records in the shape used by the dashboard."""
+        self._ensure_backend()
+        ph = self._ph
+        conn = self._connect()
+        try:
+            cur = conn.cursor()
+            cur.execute(
+                f"SELECT id, title, release_year, runtime, budget, original_language, genres, "
+                f"predicted_probability, is_popular, created_at, model_architecture, poster_url "
+                f"FROM prediction_logs ORDER BY id DESC LIMIT {ph} OFFSET {ph}",
+                (limit, offset),
+            )
+            rows = cur.fetchall()
+        finally:
+            conn.close()
+
+        return [
+            {
+                "id": row[0], "title": row[1], "release_year": row[2], "runtime": row[3],
+                "budget": row[4], "original_language": row[5], "genres": row[6],
+                "probability": float(row[7]), "predicted_probability": float(row[7]),
+                "is_popular": bool(row[8]),
+                "prediction": "Popular" if row[8] else "Kurang Populer",
+                "created_at": row[9].isoformat() if hasattr(row[9], "isoformat") else row[9],
+                "model_architecture": row[10] or "Multi-Layer Perceptron (MLP)",
+                "poster_url": row[11],
+            }
+            for row in rows
+        ]
+
+    def delete(self, prediction_id: int) -> bool:
+        """Delete one prediction log entry; return whether a row was removed."""
+        self._ensure_backend()
+        conn = self._connect()
+        try:
+            cur = conn.cursor()
+            cur.execute(
+                f"DELETE FROM prediction_logs WHERE id = {self._ph}",
+                (prediction_id,),
+            )
+            deleted = cur.rowcount > 0
+            conn.commit()
+        finally:
+            conn.close()
+        if deleted:
+            self._version += 1
+        return deleted
 
     # ------------------------------------------------------------------ #
     # Analytics

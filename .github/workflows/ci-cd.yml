@@ -6,6 +6,11 @@ on:
   pull_request:
     branches: [ "main" ]
 
+env:
+  # Release metadata baked into both images and shown in the UI footer.
+  GIT_COMMIT_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+  RELEASE_ENV: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' && 'production' || 'preview' }}
+
 jobs:
   # ==========================================
   # CONTINUOUS INTEGRATION (CI)
@@ -59,6 +64,9 @@ jobs:
         run: |
           python -c "import backend.main; print('FastAPI and MLP Model loaded successfully!')"
 
+      - name: Run Backend Unit Tests
+        run: python -m unittest backend.tests.test_prediction_store backend.tests.test_health -v
+
   docker-build-ci:
     name: Docker Multi-Container Build Verification
     runs-on: ubuntu-latest
@@ -77,6 +85,9 @@ jobs:
           file: ./backend/Dockerfile
           push: false
           tags: movie-backend:latest
+          build-args: |
+            GIT_COMMIT_SHA=${{ env.GIT_COMMIT_SHA }}
+            RELEASE_ENV=${{ env.RELEASE_ENV }}
 
       - name: Build Frontend Docker Image
         uses: docker/build-push-action@v5
@@ -85,6 +96,31 @@ jobs:
           file: ./frontend/Dockerfile
           push: false
           tags: movie-frontend:latest
+          build-args: |
+            GIT_COMMIT_SHA=${{ env.GIT_COMMIT_SHA }}
+            RELEASE_ENV=${{ env.RELEASE_ENV }}
+
+      - name: Start All Containers (Frontend, Backend, Database)
+        run: docker compose up -d --build --wait --wait-timeout 180
+
+      - name: Verify Live Environment Health
+        run: |
+          set -euo pipefail
+          echo "Frontend (Nginx :3000):"
+          curl -fsS -o /dev/null -w "  HTTP %{http_code} in %{time_total}s\n" http://localhost:3000/
+          echo "Backend via Nginx proxy (/api/health):"
+          health=$(curl -fsS http://localhost:3000/api/health)
+          echo "$health" | python3 -m json.tool
+          echo "$health" | python3 -c "import json,sys; d=json.load(sys.stdin)['database']; assert d['engine']=='postgresql' and d['connected'], d; print('  PostgreSQL connected in', d['latency_ms'], 'ms')"
+          echo "$health" | python3 -c "import json,sys,os; r=json.load(sys.stdin)['release']; assert r['commit_sha']==os.environ['GIT_COMMIT_SHA'], r; print('  Release', r['environment'], r['commit_sha'][:7])"
+
+      - name: Dump Container Logs on Failure
+        if: failure()
+        run: docker compose ps && docker compose logs --no-color --tail 200
+
+      - name: Stop Containers
+        if: always()
+        run: docker compose down -v
 
   # ==========================================
   # CONTINUOUS DEPLOYMENT (CD)
@@ -103,6 +139,7 @@ jobs:
           echo "=========================================="
           echo "CI checks passed! Proceeding to CD release."
           echo "Commit: ${{ github.sha }}"
+          echo "Release Environment: ${{ env.RELEASE_ENV }}"
           echo "Target Environment: Staging / Production Containers"
           echo "Services: Frontend (Nginx), Backend (FastAPI), Database (Postgres)"
           echo "=========================================="

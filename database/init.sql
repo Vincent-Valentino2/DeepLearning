@@ -10,7 +10,9 @@ CREATE TABLE IF NOT EXISTS prediction_logs (
     genres TEXT,
     predicted_probability FLOAT NOT NULL,
     is_popular BOOLEAN NOT NULL,
-    created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+    model_architecture TEXT,
+    poster_url TEXT
 );
 
 CREATE TABLE IF NOT EXISTS bookmarked_movies (

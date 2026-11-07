@@ -16,6 +16,12 @@ RUN pip install --no-cache-dir -r ./backend/requirements.txt
 COPY backend ./backend
 COPY data/sample_movies.json ./data/sample_movies.json
 
+# Release metadata reported by GET /api/health
+ARG GIT_COMMIT_SHA=unknown
+ARG RELEASE_ENV=production
+ENV GIT_COMMIT_SHA=$GIT_COMMIT_SHA \
+    RELEASE_ENV=$RELEASE_ENV
+
 EXPOSE 8001
 
 HEALTHCHECK --interval=30s --timeout=5s --start-period=5s --retries=3 \
