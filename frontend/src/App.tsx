@@ -782,7 +782,7 @@ export default function App() {
                   TMDB Film Dossier & Classifier
                 </span>
                 <span className="text-[10px] font-mono uppercase tracking-wider text-[#78716c] px-2 py-0.5 rounded border border-[#e5e2da] bg-[#f8f7f4]">
-                  MLP v2.0 · Genre Affinity & De-biased
+                  MLP v2.1 · Era & Culture Features
                 </span>
               </div>
             </div>

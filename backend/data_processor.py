@@ -9,8 +9,11 @@ import pandas as pd
 from sklearn.model_selection import train_test_split
 from sklearn.neural_network import MLPClassifier
 from sklearn.preprocessing import StandardScaler
-from sklearn.metrics import classification_report, roc_auc_score, f1_score, accuracy_score
+from sklearn.metrics import (
+    accuracy_score, confusion_matrix, f1_score, precision_score, recall_score, roc_auc_score,
+)
 import joblib
+import sklearn
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 logger = logging.getLogger("TMDB_DataProcessor")
@@ -18,6 +21,8 @@ logger = logging.getLogger("TMDB_DataProcessor")
 DATA_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "data")
 MODELS_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "models")
 DB_PATH = os.path.join(DATA_DIR, "movies.db")
+EVALUATION_PATH = os.path.join(MODELS_DIR, "evaluation.json")
+RANDOM_SEED = 42
 os.makedirs(MODELS_DIR, exist_ok=True)
 
 TMDB_BASE_POSTER_URL = "https://image.tmdb.org/t/p/w500"
@@ -34,6 +39,42 @@ TOP_LANGUAGES = [
     "en", "ja", "ko", "zh", "cn", "ru", "fr", "es", "it", "de", "hi", "other"
 ]
 
+FEATURE_NAMES: List[str] = (
+    [f"genre_{g.lower().replace(' ', '_')}" for g in STANDARD_GENRES]
+    + ["genre_density", "is_single_genre"]
+    + ["aff_drama_war", "aff_epic_war_drama", "aff_scifi_drama", "aff_romance_drama", "aff_romance_comedy",
+       "aff_crime_psych", "aff_blockbuster", "aff_animation_myth", "aff_history_drama", "aff_auteur_prestige"]
+    + ["runtime_std", "is_epic_length", "is_standard_length", "epic_prestige_affinity"]
+    + ["is_vintage", "is_retro", "is_modern", "vintage_cult_resilience"]
+    + [f"lang_{l}" for l in TOP_LANGUAGES]
+    + ["sphere_slavic", "sphere_east_asian", "sphere_euro", "sphere_anglo",
+       "slavic_prestige", "hk_prestige", "japan_indie_prestige"]
+    + ["has_budget", "log_budget_std", "tier_tentpole", "indie_prestige_footprint"]
+)
+
+# Column groups used by the ablation study in backend/experiments.py
+FEATURE_GROUPS: Dict[str, List[int]] = {
+    "genre_affinity": [FEATURE_NAMES.index(n) for n in FEATURE_NAMES if n.startswith("aff_")],
+    "era_culture": [FEATURE_NAMES.index(n) for n in (
+        "is_vintage", "is_retro", "is_modern", "vintage_cult_resilience",
+        "sphere_slavic", "sphere_east_asian", "sphere_euro", "sphere_anglo",
+        "slavic_prestige", "hk_prestige", "japan_indie_prestige",
+    )],
+}
+
+# Probability margin from the 0.50 decision boundary -> confidence label shown in the UI
+CONFIDENCE_BANDS = [(0.25, "High"), (0.10, "Moderate"), (0.0, "Low (Borderline)")]
+
+
+def confidence_level(prob: float) -> str:
+    """Maps a predicted probability to the confidence label used by the API and the evaluation."""
+    margin = abs(prob - 0.50)
+    for cutoff, label in CONFIDENCE_BANDS:
+        if margin >= cutoff:
+            return label
+    return CONFIDENCE_BANDS[-1][1]
+
+
 def extract_cinephile_features(
     df: pd.DataFrame,
     scaler_budget: Optional[StandardScaler] = None,
@@ -48,7 +89,7 @@ def extract_cinephile_features(
       - Epic historical war/drama pacing terms
       - Runtime & epic cinematic pacing
       - Non-linear era dynamics & vintage cult durability (counteracting recency bias)
-      - De-biased language & cultural spheres (treating Soviet, HK, European cinema fairly)
+      - Language & cultural-sphere indicators (Slavic, East Asian, European, Anglophone)
       - Non-Hollywood prestige budget scale
     """
     n = len(df)
@@ -210,135 +251,235 @@ def extract_cinephile_features(
         indie_prestige_footprint[:, None]
     ]
     X = np.hstack(feature_cols)
+    assert X.shape[1] == len(FEATURE_NAMES), f"feature count {X.shape[1]} != {len(FEATURE_NAMES)}"
     scalers = {"budget": scaler_budget, "runtime": scaler_runtime}
     return X, scalers
 
-def load_training_dataset(sample_limit: int = 35000) -> pd.DataFrame:
-    """Loads a diverse, clean training cohort from movies.db or fallback CSV."""
-    if os.path.exists(DB_PATH):
-        logger.info(f"Loading balanced feature films from SQLite database {DB_PATH}...")
-        conn = sqlite3.connect(DB_PATH)
-        query = f"""
-            SELECT title, release_year, runtime, genres, original_language, budget, popularity
-            FROM movies
-            WHERE runtime >= 40 AND popularity >= 0.5 AND genres IS NOT NULL AND genres != ''
-            ORDER BY RANDOM()
-            LIMIT {sample_limit}
-        """
-        df = pd.read_sql_query(query, conn)
-        conn.close()
-    else:
-        csv_candidates = glob.glob(os.path.join(DATA_DIR, "*.csv"))
-        if not csv_candidates:
-            raise FileNotFoundError("Neither movies.db nor CSV found in data/.")
-        csv_path = csv_candidates[0]
-        logger.info(f"Loading training data from {csv_path}...")
-        df = pd.read_csv(csv_path, nrows=sample_limit, usecols=[
-            "title", "release_date", "runtime", "genres", "original_language", "budget", "popularity"
-        ])
-        df = df.dropna(subset=["title", "popularity"]).copy()
-        df = df[df["runtime"] >= 40].copy()
-        df["release_year"] = pd.to_datetime(df["release_date"], errors="coerce").dt.year.fillna(2010).astype(int)
+# Curated world-cinema anchors. They are added ONLY to the training split (after the
+# train/test split) so the test set contains real, unseen catalog films only.
+CURATED_ANCHORS = [
+    ("Stalker", 1979, 162, "Science Fiction, Drama", "ru", 120000, 27.7),
+    ("Come and See", 1985, 142, "Drama, War", "ru", 0, 27.8),
+    ("Chungking Express", 1994, 103, "Drama, Comedy, Romance", "cn", 160000, 27.9),
+    ("Solaris", 1972, 167, "Drama, Science Fiction, Mystery", "ru", 0, 24.0),
+    ("Cure", 1997, 111, "Crime, Horror, Mystery, Thriller", "ja", 1500000, 45.1),
+    ("All About Lily Chou-Chou", 2001, 146, "Drama, Crime, Music", "ja", 2500000, 22.3),
+    ("In the Mood for Love", 2000, 99, "Drama, Romance", "cn", 1500000, 35.0),
+    ("Past Lives", 2023, 106, "Drama, Romance", "en", 12000000, 40.0),
+    ("Drive My Car", 2021, 180, "Drama", "ja", 3500000, 20.0),
+    ("Perfect Days", 2023, 123, "Drama", "ja", 4500000, 28.0),
+    ("Apocalypse Now", 1979, 147, "Drama, War", "en", 31500000, 45.0),
+    ("Ran", 1985, 162, "Action, Drama, War", "ja", 11500000, 30.0),
+]
+CURATED_REPEAT = 12
+TRAINING_COLUMNS = ["id", "title", "release_year", "runtime", "genres", "original_language", "budget", "popularity"]
 
-    # Anchor curated world cinema masterworks in the training set with representative weights
-    curated_world_cinema = [
-        ("Stalker", 1979, 162, "Science Fiction, Drama", "ru", 120000, 27.7),
-        ("Come and See", 1985, 142, "Drama, War", "ru", 0, 27.8),
-        ("Chungking Express", 1994, 103, "Drama, Comedy, Romance", "cn", 160000, 27.9),
-        ("Solaris", 1972, 167, "Drama, Science Fiction, Mystery", "ru", 0, 24.0),
-        ("Cure", 1997, 111, "Crime, Horror, Mystery, Thriller", "ja", 1500000, 45.1),
-        ("All About Lily Chou-Chou", 2001, 146, "Drama, Crime, Music", "ja", 2500000, 22.3),
-        ("In the Mood for Love", 2000, 99, "Drama, Romance", "cn", 1500000, 35.0),
-        ("Past Lives", 2023, 106, "Drama, Romance", "en", 12000000, 40.0),
-        ("Drive My Car", 2021, 180, "Drama", "ja", 3500000, 20.0),
-        ("Perfect Days", 2023, 123, "Drama", "ja", 4500000, 28.0),
-        ("Apocalypse Now", 1979, 147, "Drama, War", "en", 31500000, 45.0),
-        ("Ran", 1985, 162, "Action, Drama, War", "ja", 11500000, 30.0),
-    ] * 12
-    cult_df = pd.DataFrame(curated_world_cinema, columns=[
-        "title", "release_year", "runtime", "genres", "original_language", "budget", "popularity"
-    ])
-    df = pd.concat([df, cult_df], ignore_index=True)
+
+def curated_anchor_frame(repeat: int = CURATED_REPEAT) -> pd.DataFrame:
+    df = pd.DataFrame(CURATED_ANCHORS * repeat, columns=TRAINING_COLUMNS[1:])
+    df.insert(0, "id", -1 - (df.index % len(CURATED_ANCHORS)))  # synthetic negative IDs
     return df
 
-def train_and_export_model(sample_limit: int = 35000) -> Dict[str, Any]:
-    """Trains the upgraded MLP with genre affinity and debiased cultural architecture."""
-    df = load_training_dataset(sample_limit=sample_limit)
-    logger.info(f"Loaded {len(df):,} clean training records.")
 
-    # Split train/test
-    df_train, df_test = train_test_split(df, test_size=0.20, random_state=42)
+def load_candidate_pool() -> pd.DataFrame:
+    """All catalog films that pass the quality filter, deduplicated, in a deterministic order."""
+    if os.path.exists(DB_PATH):
+        logger.info(f"Loading candidate pool from SQLite database {DB_PATH}...")
+        conn = sqlite3.connect(DB_PATH)
+        df = pd.read_sql_query("""
+            SELECT id, title, release_year, runtime, genres, original_language, budget, popularity
+            FROM movies
+            WHERE runtime >= 40 AND popularity >= 0.5 AND genres IS NOT NULL AND genres != ''
+            ORDER BY id
+        """, conn)
+        conn.close()
+    else:
+        csv_candidates = sorted(glob.glob(os.path.join(DATA_DIR, "*.csv")), key=os.path.getsize, reverse=True)
+        if not csv_candidates:
+            raise FileNotFoundError("Neither movies.db nor CSV found in data/.")
+        logger.info(f"Loading candidate pool from {csv_candidates[0]}...")
+        df = pd.read_csv(csv_candidates[0], usecols=[
+            "id", "title", "release_date", "runtime", "genres", "original_language", "budget", "popularity"
+        ])
+        df["release_year"] = pd.to_datetime(df["release_date"], errors="coerce").dt.year
+        df = df[(df["runtime"] >= 40) & (df["popularity"] >= 0.5) & df["genres"].fillna("").ne("")]
+        df = df.dropna(subset=["title"]).sort_values("id")[TRAINING_COLUMNS]
 
-    # 75th percentile threshold strictly on train split (avoiding target leakage)
-    popularity_threshold = float(np.percentile(df_train["popularity"].dropna().values, 75))
-    logger.info(f"Calculated 75th Percentile Popularity Threshold (from Train split): {popularity_threshold:.4f}")
+    before = len(df)
+    df = df.drop_duplicates(subset="id")
+    df = df.drop_duplicates(subset=["title", "release_year"])
+    logger.info(f"Candidate pool: {len(df):,} films ({before - len(df):,} duplicates removed)")
+    return df.reset_index(drop=True)
 
-    y_train = (df_train["popularity"] >= popularity_threshold).astype(int).values
-    y_test = (df_test["popularity"] >= popularity_threshold).astype(int).values
 
-    logger.info(f"Train class balance: {np.mean(y_train):.2%} popular | Test class balance: {np.mean(y_test):.2%} popular")
+def load_training_dataset(sample_limit: int = 35000, seed: int = RANDOM_SEED,
+                          pool: Optional[pd.DataFrame] = None) -> pd.DataFrame:
+    """Reproducible random sample of real catalog films (no curated anchors)."""
+    pool = load_candidate_pool() if pool is None else pool
+    n = min(sample_limit, len(pool))
+    return pool.sample(n=n, random_state=seed).reset_index(drop=True)
 
-    # Feature extraction with fitted scalers
-    X_train, scalers = extract_cinephile_features(df_train, fit_scalers=True)
-    X_test, _ = extract_cinephile_features(
-        df_test,
-        scaler_budget=scalers["budget"],
-        scaler_runtime=scalers["runtime"],
-        fit_scalers=False
-    )
 
-    logger.info(f"Feature matrix shape: X_train = {X_train.shape}, X_test = {X_test.shape}")
+def split_dataset(df: pd.DataFrame, seed: int = RANDOM_SEED, test_size: float = 0.20):
+    """80/20 split stratified on the top-quartile label so both splits keep the same class ratio."""
+    strata = (df["popularity"] >= np.percentile(df["popularity"], 75)).astype(int)
+    return train_test_split(df, test_size=test_size, random_state=seed, stratify=strata)
 
-    logger.info("Training Multi-Layer Perceptron (MLPClassifier with layers: 128, 64, 32)...")
-    mlp = MLPClassifier(
+
+def build_mlp(seed: int = RANDOM_SEED, n_train: int = 128) -> MLPClassifier:
+    return MLPClassifier(
         hidden_layer_sizes=(128, 64, 32),
         activation="relu",
         solver="adam",
-        alpha=0.002,
-        batch_size=min(128, len(X_train)),
-        learning_rate="adaptive",
+        alpha=0.002,                 # L2 regularisation
+        batch_size=min(128, n_train),
         learning_rate_init=0.001,
         max_iter=50,
-        early_stopping=True,
+        early_stopping=True,         # holds out 10% of train; best-validation weights are restored
         validation_fraction=0.1,
         n_iter_no_change=5,
-        random_state=42,
-        verbose=False
+        random_state=seed,
+        verbose=False,
     )
 
+
+def prepare_training_data(df_train: pd.DataFrame, df_test: pd.DataFrame, with_anchors: bool = True):
+    """Labels from the train-only 75th percentile; scalers fit on train only; anchors train-only."""
+    popularity_threshold = float(np.percentile(df_train["popularity"].dropna().values, 75))
+    fit_df = pd.concat([df_train, curated_anchor_frame()], ignore_index=True) if with_anchors else df_train
+    y_train = (fit_df["popularity"] >= popularity_threshold).astype(int).values
+    y_test = (df_test["popularity"] >= popularity_threshold).astype(int).values
+    X_train, scalers = extract_cinephile_features(fit_df, fit_scalers=True)
+    X_test, _ = extract_cinephile_features(
+        df_test, scaler_budget=scalers["budget"], scaler_runtime=scalers["runtime"], fit_scalers=False
+    )
+    return X_train, y_train, X_test, y_test, scalers, popularity_threshold, fit_df
+
+
+def classification_metrics(y_true: np.ndarray, y_prob: np.ndarray) -> Dict[str, Any]:
+    y_pred = (y_prob >= 0.50).astype(int)
+    tn, fp, fn, tp = confusion_matrix(y_true, y_pred, labels=[0, 1]).ravel()
+    return {
+        "accuracy": float(accuracy_score(y_true, y_pred)),
+        "precision": float(precision_score(y_true, y_pred, zero_division=0)),
+        "recall": float(recall_score(y_true, y_pred, zero_division=0)),
+        "f1": float(f1_score(y_true, y_pred, zero_division=0)),
+        "roc_auc": float(roc_auc_score(y_true, y_prob)) if len(np.unique(y_true)) > 1 else 0.5,
+        "confusion_matrix": {"tn": int(tn), "fp": int(fp), "fn": int(fn), "tp": int(tp)},
+    }
+
+
+def confidence_breakdown(y_true: np.ndarray, y_prob: np.ndarray) -> Dict[str, Dict[str, float]]:
+    """Accuracy per confidence label: evidence that the margin-based label is meaningful."""
+    labels = np.array([confidence_level(p) for p in y_prob])
+    y_pred = (y_prob >= 0.50).astype(int)
+    out = {}
+    for _, label in CONFIDENCE_BANDS:
+        m = labels == label
+        out[label] = {"share": float(m.mean()), "count": int(m.sum()),
+                      "accuracy": float((y_pred[m] == y_true[m]).mean()) if m.any() else None}
+    return out
+
+
+def error_breakdown(df_test: pd.DataFrame, y_true: np.ndarray, y_prob: np.ndarray) -> Dict[str, Dict[str, Any]]:
+    """Accuracy, recall and error counts per era / language sphere / budget availability."""
+    y_pred = (y_prob >= 0.50).astype(int)
+    years = df_test["release_year"].fillna(2010).values
+    langs = df_test["original_language"].fillna("en").str.lower().values
+    groups = {
+        "era": np.select([years < 1985, years < 2005], ["< 1985", "1985-2004"], ">= 2005"),
+        "language": np.select(
+            [langs == "en", np.isin(langs, ["ja", "ko", "zh", "cn", "yue"]),
+             np.isin(langs, ["fr", "it", "de", "es", "sv"]), np.isin(langs, ["ru", "pl", "uk", "cs"])],
+            ["English", "Asia Timur", "Eropa Barat", "Slavia"], "Lainnya"),
+        "budget": np.where(df_test["budget"].fillna(0).values > 0, "budget tercatat", "budget 0 / kosong"),
+    }
+    out: Dict[str, Dict[str, Any]] = {}
+    for dim, labels in groups.items():
+        out[dim] = {}
+        for g in sorted(set(labels)):
+            m = labels == g
+            pos = m & (y_true == 1)
+            out[dim][g] = {
+                "count": int(m.sum()),
+                "positive_rate": float(y_true[m].mean()),
+                "accuracy": float((y_pred[m] == y_true[m]).mean()),
+                "recall": float(y_pred[pos].mean()) if pos.any() else None,
+                "false_negative": int((m & (y_true == 1) & (y_pred == 0)).sum()),
+                "false_positive": int((m & (y_true == 0) & (y_pred == 1)).sum()),
+            }
+    return out
+
+
+def train_and_export_model(sample_limit: int = 35000, seed: int = RANDOM_SEED) -> Dict[str, Any]:
+    """Trains the MLP with a reproducible, leakage-free protocol and saves model + evaluation."""
+    pool = load_candidate_pool()
+    df = load_training_dataset(sample_limit=sample_limit, seed=seed, pool=pool)
+    df_train, df_test = split_dataset(df, seed=seed)
+    X_train, y_train, X_test, y_test, scalers, popularity_threshold, fit_df = prepare_training_data(df_train, df_test)
+    logger.info(f"Threshold (train 75th percentile): {popularity_threshold:.4f} | "
+                f"train {len(X_train):,} ({y_train.mean():.2%} popular) | test {len(X_test):,} ({y_test.mean():.2%} popular)")
+
+    mlp = build_mlp(seed, len(X_train))
     mlp.fit(X_train, y_train)
 
-    y_pred = mlp.predict(X_test)
     y_prob = mlp.predict_proba(X_test)[:, 1]
+    metrics = classification_metrics(y_test, y_prob)
+    train_metrics = classification_metrics(y_train, mlp.predict_proba(X_train)[:, 1])
+    logger.info(f"Test accuracy {metrics['accuracy']:.4f} | precision {metrics['precision']:.4f} | "
+                f"recall {metrics['recall']:.4f} | F1 {metrics['f1']:.4f} | ROC-AUC {metrics['roc_auc']:.4f}")
 
-    acc = float(accuracy_score(y_test, y_pred))
-    roc_auc = float(roc_auc_score(y_test, y_prob)) if len(np.unique(y_test)) > 1 else 0.5
-    f1 = float(f1_score(y_test, y_pred, zero_division=0))
-
-    logger.info(f"Test Accuracy: {acc:.4f} | ROC-AUC: {roc_auc:.4f} | F1-Score: {f1:.4f}")
+    evaluation = {
+        "model_version": "2.1.0-cinephile",
+        "seed": seed,
+        "sklearn_version": sklearn.__version__,
+        "data": {
+            "candidate_pool": int(len(pool)),
+            "sample": int(len(df)),
+            "train_real": int(len(df_train)),
+            "train_anchor_rows": int(len(fit_df) - len(df_train)),
+            "train_total": int(len(X_train)),
+            "internal_validation": int(round(len(X_train) * 0.1)),
+            "test": int(len(X_test)),
+            "train_positive_rate": float(y_train.mean()),
+            "test_positive_rate": float(y_test.mean()),
+        },
+        "popularity_threshold": popularity_threshold,
+        "feature_count": int(X_train.shape[1]),
+        "test": metrics,
+        "train": train_metrics,
+        "confidence": confidence_breakdown(y_test, y_prob),
+        "errors_by_group": error_breakdown(df_test, y_test, y_prob),
+        "training": {
+            "n_iter": int(mlp.n_iter_),
+            "best_iteration": int(np.argmax(mlp.validation_scores_)) + 1,
+            "best_validation_accuracy": float(mlp.best_validation_score_),
+            "loss_curve": [float(x) for x in mlp.loss_curve_],
+            "validation_accuracy": [float(x) for x in mlp.validation_scores_],
+            "trainable_parameters": int(sum(w.size for w in mlp.coefs_) + sum(b.size for b in mlp.intercepts_)),
+        },
+    }
 
     artifact_path = os.path.join(MODELS_DIR, "mlp_model.joblib")
     artifact_data = {
         "model": mlp,
-        "model_version": "2.0.0-cinephile",
+        "model_version": evaluation["model_version"],
         "genres_list": STANDARD_GENRES,
         "languages_list": TOP_LANGUAGES,
+        "feature_names": FEATURE_NAMES,
         "scaler_budget": scalers["budget"],
         "scaler_runtime": scalers["runtime"],
         "popularity_threshold": popularity_threshold,
         "feature_count": X_train.shape[1],
-        "metrics": {
-            "accuracy": acc,
-            "roc_auc": roc_auc,
-            "f1": f1,
-            "n_train": len(X_train),
-            "n_test": len(X_test),
-        }
+        "metrics": {**{k: v for k, v in metrics.items() if k != "confusion_matrix"},
+                    "n_train": len(X_train), "n_test": len(X_test)},
     }
-
     joblib.dump(artifact_data, artifact_path)
-    logger.info(f"Successfully saved upgraded MLP model package to {artifact_path}")
+    with open(EVALUATION_PATH, "w") as f:
+        json.dump(evaluation, f, indent=2)
+    logger.info(f"Saved model to {artifact_path} and evaluation to {EVALUATION_PATH}")
     return artifact_data
+
 
 if __name__ == "__main__":
     train_and_export_model()

@@ -3,6 +3,6 @@ uvicorn>=0.30.0
 pydantic>=2.8.0
 numpy>=1.26.0
 pandas>=2.2.0
-scikit-learn>=1.4.0
+scikit-learn==1.9.1  # must match the version that serialized backend/models/mlp_model.joblib
 joblib>=1.3.0
 psycopg2-binary>=2.9.9
