@@ -6,7 +6,6 @@ import {
   Tag,
   Search,
   Database,
-  RefreshCw,
   Film,
   Sparkles,
   ChevronDown,
@@ -457,8 +456,8 @@ export default function App() {
   const environmentHealth = useEnvironmentHealth()
   const [datasetInfo, setDatasetInfo] = useState<DatasetStatus | null>(null)
   const [isLoading, setIsLoading] = useState<boolean>(false)
-  const [isProcessingDataset, setIsProcessingDataset] = useState(false)
   const [result, setResult] = useState<PredictionResult | null>(null)
+  const [predictError, setPredictError] = useState<string | null>(null)
 
   // Bookmarks / Watchlist state
   const [bookmarks, setBookmarks] = useState<MovieCatalogItem[]>([])
@@ -686,6 +685,7 @@ export default function App() {
   const submitPrediction = async (customPayload?: any, e?: React.FormEvent) => {
     if (e) e.preventDefault()
     setIsLoading(true)
+    setPredictError(null)
 
     const payload = customPayload || {
       title: title.trim() || 'Untitled Film',
@@ -712,45 +712,15 @@ export default function App() {
       setResult(data)
       setBackendStatus('connected')
       void fetchPredictionHistory()
-    } catch {
-      const isPopular = payload.budget >= 30_000_000 || payload.genres.some((g: string) => ['Action', 'Adventure', 'Science Fiction'].includes(g))
-      setResult({
-        title: payload.title,
-        prediction: isPopular ? 'Popular' : 'Kurang Populer',
-        is_popular: isPopular,
-        probability: isPopular ? 0.78 : 0.32,
-        threshold_percentile: 'Top 25% (75th Percentile TMDB Popularity)',
-        confidence_level: 'Standard',
-        model_architecture: 'Multi-Layer Perceptron (MLP)',
-        input_features: payload,
-        feature_insights: [
-          'Budget scale and genre portfolio anchor model distribution weight.',
-          'Strictly excluded target leakage: popularity, vote_count, and vote_average.'
-        ],
-        poster_url: payload.poster_url,
-        tagline: payload.tagline,
-        overview: payload.overview,
-      })
+    } catch (err) {
+      // No local guess: every result shown must come from the trained MLP served by the backend.
+      setResult(null)
+      setPredictError(
+        `Prediksi gagal: backend MLP tidak dapat dihubungi (${err instanceof Error ? err.message : 'network error'}).`
+      )
       if (backendStatus !== 'connected') setBackendStatus('disconnected')
     } finally {
       setIsLoading(false)
-    }
-  }
-
-  const handleRetrainDataset = async () => {
-    setIsProcessingDataset(true)
-    try {
-      const res = await fetch('/api/data/process', { method: 'POST' })
-      if (!res.ok) {
-        const err = await res.json()
-        throw new Error(err.detail || 'Failed to process dataset')
-      }
-      await checkHealthAndStatus()
-      alert('Dataset processed and MLP model retrained successfully!')
-    } catch (err: any) {
-      alert(`Processing error: ${err.message}`)
-    } finally {
-      setIsProcessingDataset(false)
     }
   }
 
@@ -946,15 +916,6 @@ export default function App() {
                 Safe Filtered
               </span>
             </div>
-            <button
-              type="button"
-              onClick={handleRetrainDataset}
-              disabled={isProcessingDataset}
-              className="cursor-pointer px-2.5 py-1.5 rounded border border-[#1c1917] bg-[#1c1917] hover:bg-[#2e2a27] text-white text-[11px] font-medium transition-colors flex items-center gap-1"
-            >
-              <RefreshCw className={`w-3 h-3 ${isProcessingDataset ? 'animate-spin' : ''}`} />
-              <span className="hidden sm:inline">Re-train</span>
-            </button>
           </div>
         </div>
 
@@ -1382,6 +1343,12 @@ export default function App() {
                   )}
                 </div>
               </div>
+
+              {predictError && (
+                <div role="alert" className="border border-red-300 bg-red-50 text-red-800 rounded-xl p-4 text-xs sm:text-sm">
+                  {predictError}
+                </div>
+              )}
 
               {/* SECTION 2: POPULARITY CLASSIFICATION VERDICT & METER */}
               {result && (
