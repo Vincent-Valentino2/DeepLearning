@@ -168,6 +168,9 @@ The footer shows the commit the frontend was built from (linked to GitHub), the 
 1. **Frontend Lint & Build Check**: typecheck and production build
 2. **Backend Syntax & Health Verification**: import check and backend unit tests
 3. **Docker Multi-Container Build Verification**: builds both images, starts all three containers with Compose, and checks that the frontend, `/api/health`, and PostgreSQL are reachable
-4. **Automated Deployment Stage**: runs only on pushes to `main`
+4. **Publish Container Images (GHCR)**: pushes to `main` only; pushes the frontend and backend images tagged with the commit SHA and `latest`
+5. **Deploy to Production (Render)**: pushes to `main` only; deploys those exact images to Render and waits until production reports the new commit
 
-`main` is protected: changes go through a pull request, and the three CI checks above must pass before merging.
+`main` is protected: changes go through a pull request, and checks 1-3 must pass before merging.
+
+Production setup, rollback, and running the published images with `docker-compose.prod.yml` are described in [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md).
