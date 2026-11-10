@@ -157,6 +157,10 @@ jobs:
           echo "frontend=${prefix}-frontend" >> "$GITHUB_OUTPUT"
           echo "database=${prefix}-database" >> "$GITHUB_OUTPUT"
 
+      # arm64 images run on ARM servers (e.g. Oracle Cloud Ampere) and Apple Silicon
+      - name: Set up QEMU (multi-architecture builds)
+        uses: docker/setup-qemu-action@v3
+
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 
@@ -173,6 +177,7 @@ jobs:
           context: .
           file: ./backend/Dockerfile
           push: true
+          platforms: linux/amd64,linux/arm64
           tags: |
             ${{ steps.names.outputs.backend }}:${{ github.sha }}
             ${{ steps.names.outputs.backend }}:latest
@@ -187,6 +192,7 @@ jobs:
           context: ./frontend
           file: ./frontend/Dockerfile
           push: true
+          platforms: linux/amd64,linux/arm64
           tags: |
             ${{ steps.names.outputs.frontend }}:${{ github.sha }}
             ${{ steps.names.outputs.frontend }}:latest
@@ -201,6 +207,7 @@ jobs:
           context: ./database
           file: ./database/Dockerfile
           push: true
+          platforms: linux/amd64,linux/arm64
           tags: |
             ${{ steps.names.outputs.database }}:${{ github.sha }}
             ${{ steps.names.outputs.database }}:latest

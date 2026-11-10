@@ -1,5 +1,7 @@
 # Multi-stage Dockerfile for React + Vite Frontend
-FROM node:22-alpine AS builder
+# The build output is plain static files, so build on the runner's native platform
+# even when producing arm64 images (much faster than emulating Node under QEMU).
+FROM --platform=$BUILDPLATFORM node:22-alpine AS builder
 
 WORKDIR /app
 

@@ -30,7 +30,9 @@ after review and green CI.
 | `deeplearning-backend` | `backend/Dockerfile` | FastAPI, the trained MLP model, the compact movie catalog |
 | `deeplearning-database` | `database/Dockerfile` | PostgreSQL 16 with `init.sql` baked in |
 
-Each is tagged with the commit SHA (an immutable release) and `latest`.
+Each is tagged with the commit SHA (an immutable release) and `latest`, and built for both
+`linux/amd64` and `linux/arm64`, so the same tag runs on Intel/AMD servers, ARM servers such as
+Oracle Cloud Ampere, and Apple Silicon laptops.
 
 ## Why a self-hosted runner
 
@@ -72,6 +74,45 @@ Requirements: Docker with the Compose plugin (Docker Desktop on macOS/Windows), 
 If the database password is set after the first deploy, the existing volume keeps the old
 password. Set it before the first deploy, or remove the volume (`docker volume rm tmdb-prod_pgdata`,
 which deletes the data).
+
+## Example: free VPS on Oracle Cloud (Always Free, ARM)
+
+Oracle Cloud's Always Free tier includes Ampere A1 (ARM) instances, enough for all three
+containers. Sign-up needs card verification. Free limits changed in 2026; check Oracle's
+Always Free page for the current numbers before creating the instance.
+
+1. **Create the VM.** Oracle Cloud console > Compute > Instances > Create instance.
+   - Image: **Canonical Ubuntu 24.04**.
+   - Shape: **Ampere > VM.Standard.A1.Flex**, e.g. 1 OCPU / 6 GB (stay within the free allowance).
+   - Networking: keep "Assign a public IPv4 address" on.
+   - SSH keys: upload or download a key pair, then create the instance.
+   - "Out of host capacity" is common for free ARM shapes: retry later or pick another
+     availability domain.
+2. **Open the app port** (80 gives a clean `http://<ip>` URL):
+   - Instance > Subnet > Security list > Add ingress rule: source `0.0.0.0/0`, TCP, port `80`.
+   - Oracle's Ubuntu images also filter with iptables. On the VM:
+     ```bash
+     sudo iptables -I INPUT 6 -m state --state NEW -p tcp --dport 80 -j ACCEPT
+     sudo netfilter-persistent save
+     ```
+3. **Install Docker** on the VM (`ssh ubuntu@<ip>`):
+   ```bash
+   curl -fsSL https://get.docker.com | sudo sh
+   sudo usermod -aG docker ubuntu   # then log out and back in
+   docker compose version
+   ```
+4. **Install the runner** as in step 2 of the one-time setup: choose **Linux** and **ARM64** on
+   GitHub's "New self-hosted runner" page, enter the label `production`, then run it as a service:
+   ```bash
+   sudo ./svc.sh install ubuntu && sudo ./svc.sh start
+   ```
+5. **Repository settings:** `DEPLOY_SERVER_ENABLED=true`, `FRONTEND_PORT=80`,
+   `PRODUCTION_URL=http://<ip>`, and a `POSTGRES_PASSWORD` secret.
+6. **Deploy:** Actions > the latest run on `main` > Re-run all jobs, or merge a change.
+   The app is then at `http://<ip>`.
+
+Any other Linux VPS works the same way (for example cloud credits from student programs);
+use the runner build that matches the server's CPU (x64 or ARM64).
 
 ## Checking a release
 
