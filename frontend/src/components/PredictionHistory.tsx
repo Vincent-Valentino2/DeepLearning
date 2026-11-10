@@ -1,7 +1,16 @@
 import { Clock3, FileSearch, RefreshCw, X } from 'lucide-react'
 import type { PredictionLog } from '../types'
 
-const formatDate = (value: string) => new Intl.DateTimeFormat(undefined, { dateStyle: 'medium', timeStyle: 'short' }).format(new Date(value.endsWith('Z') ? value : `${value}Z`))
+// PostgreSQL returns ISO timestamps with an offset ("...+00:00"); SQLite returns naive UTC
+// ("YYYY-MM-DD HH:MM:SS"). Only the naive form needs "Z", and a bad value must not crash the page.
+const HAS_TIMEZONE = /(Z|[+-]\d{2}:?\d{2})$/i
+const formatDate = (value: string) => {
+  const iso = HAS_TIMEZONE.test(value) ? value : `${value.replace(' ', 'T')}Z`
+  const date = new Date(iso)
+  return Number.isNaN(date.getTime())
+    ? value
+    : new Intl.DateTimeFormat(undefined, { dateStyle: 'medium', timeStyle: 'short' }).format(date)
+}
 
 export function PredictionHistoryDrawer({ open, logs, loading, error, onClose, onRefresh }: { open: boolean; logs: PredictionLog[]; loading: boolean; error: string; onClose: () => void; onRefresh: () => void }) {
   if (!open) return null
