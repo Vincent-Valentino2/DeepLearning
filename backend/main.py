@@ -26,6 +26,34 @@ logger = logging.getLogger("TMDB_API")
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 DATA_DIR = os.path.join(BASE_DIR, "data")
 DB_PATH = os.path.join(DATA_DIR, "movies.db")
+# Compact catalog shipped in the repository (backend/build_catalog_lite.py), used when the
+# full index is absent, e.g. on Vercel. It is unpacked once into a writable temp directory.
+LITE_CATALOG_GZ = os.path.join(BASE_DIR, "backend", "catalog", "movies_lite.db.gz")
+_catalog_path_cache: Optional[str] = None
+
+
+def catalog_db_path() -> Optional[str]:
+    """Path of the movie catalog: the full data/movies.db if present, else the unpacked lite copy."""
+    global _catalog_path_cache
+    if os.path.exists(DB_PATH):
+        return DB_PATH
+    if _catalog_path_cache and os.path.exists(_catalog_path_cache):
+        return _catalog_path_cache
+    if not os.path.exists(LITE_CATALOG_GZ):
+        return None
+    import gzip, shutil, tempfile
+    target = os.path.join(tempfile.gettempdir(), "movies_lite.db")
+    try:
+        if not os.path.exists(target):
+            partial = f"{target}.{os.getpid()}.part"
+            with gzip.open(LITE_CATALOG_GZ, "rb") as src, open(partial, "wb") as dst:
+                shutil.copyfileobj(src, dst)
+            os.replace(partial, target)  # atomic: concurrent requests never see a half-written file
+        _catalog_path_cache = target
+        return target
+    except OSError as e:
+        logger.warning(f"Could not unpack lite catalog: {e}")
+        return None
 MODELS_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "models")
 MODEL_PATH = os.path.join(MODELS_DIR, "mlp_model.joblib")
 
@@ -97,10 +125,11 @@ load_trained_model()
 
 def search_movies_from_db(q: str, limit: int = 10) -> List[Dict[str, Any]]:
     """Clean, safe, highly relevant movie search using indexed SQLite database."""
-    if not os.path.exists(DB_PATH):
+    db_path = catalog_db_path()
+    if not db_path:
         return []
 
-    conn = sqlite3.connect(DB_PATH)
+    conn = sqlite3.connect(db_path)
     conn.row_factory = sqlite3.Row
     c = conn.cursor()
 
@@ -264,11 +293,12 @@ def dataset_status():
     primary_csv = csv_candidates[0] if has_csv else None
     csv_size_mb = round(os.path.getsize(primary_csv) / (1024 * 1024), 2) if primary_csv else 0
 
-    db_exists = os.path.exists(DB_PATH)
+    db_path = catalog_db_path()
+    db_exists = db_path is not None
     total_indexed = 0
     if db_exists:
         try:
-            conn = sqlite3.connect(DB_PATH)
+            conn = sqlite3.connect(db_path)
             cur = conn.cursor()
             cur.execute("SELECT COUNT(*) FROM movies")
             total_indexed = cur.fetchone()[0]
@@ -285,6 +315,7 @@ def dataset_status():
         "csv_filename": os.path.basename(primary_csv) if primary_csv else "TMDB_movie_dataset_v11.csv",
         "csv_size_mb": csv_size_mb,
         "database_indexed": db_exists,
+        "catalog_source": None if not db_exists else ("full" if db_path == DB_PATH else "lite"),
         "catalog_entries_count": total_indexed,
         "model_trained": has_model,
         "model_metrics": metrics,
