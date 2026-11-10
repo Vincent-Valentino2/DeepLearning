@@ -1,5 +1,3 @@
-version: '3.8'
-
 services:
   # Container 1: Frontend (React + Vite + Tailwind via Nginx)
   frontend:
