@@ -1,4 +1,12 @@
 # Dependencies for the Vercel Python runtime (backend deployed from the repository root).
-# The backend's own list is the single source of truth.
+# Vercel cannot follow "-r" includes, so this repeats backend/requirements.txt;
+# backend/tests/test_requirements.py fails if the two lists drift apart.
+# scikit-learn must match the version that serialized backend/models/mlp_model.joblib.
 fastapi>=0.115.0
--r backend/requirements.txt
+uvicorn>=0.30.0
+pydantic>=2.8.0
+numpy>=1.26.0
+pandas>=2.2.0
+scikit-learn==1.9.1
+joblib>=1.3.0
+psycopg2-binary>=2.9.9

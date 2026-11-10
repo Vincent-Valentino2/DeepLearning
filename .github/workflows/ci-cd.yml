@@ -68,7 +68,7 @@ jobs:
           python -c "import backend.main; print('FastAPI and MLP Model loaded successfully!')"
 
       - name: Run Backend Unit Tests
-        run: python -m unittest backend.tests.test_prediction_store backend.tests.test_health -v
+        run: python -m unittest backend.tests.test_prediction_store backend.tests.test_health backend.tests.test_requirements -v
 
   docker-build-ci:
     name: Docker Multi-Container Build Verification
