@@ -101,7 +101,7 @@ export function EnvironmentStatusBar({ health }: { health: EnvironmentHealth }) 
           name="Frontend"
           state={frontend.state}
           detail={`${frontend.server} :${frontend.port}`}
-          title={`Frontend container (${frontend.server}) serving on port ${frontend.port}${frontend.latencyMs != null ? ` · ${frontend.latencyMs} ms` : ''}`}
+          title={`Frontend (${frontend.server}) serving on port ${frontend.port}${frontend.latencyMs != null ? ` · ${frontend.latencyMs} ms` : ''}`}
         />
         <StatusPill
           icon={<Server className="w-3 h-3" />}

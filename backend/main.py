@@ -216,7 +216,8 @@ def root():
 
 def _git_commit_sha() -> str:
     """Commit SHA baked in at build time, falling back to the local checkout."""
-    sha = os.getenv("GIT_COMMIT_SHA", "").strip()
+    # GIT_COMMIT_SHA: Docker build arg; VERCEL_GIT_COMMIT_SHA: set by Vercel builds
+    sha = (os.getenv("GIT_COMMIT_SHA") or os.getenv("VERCEL_GIT_COMMIT_SHA") or "").strip()
     if sha:
         return sha
     try:
@@ -231,7 +232,7 @@ def _git_commit_sha() -> str:
 
 RELEASE_INFO = {
     "commit_sha": _git_commit_sha(),
-    "environment": os.getenv("RELEASE_ENV", "development"),
+    "environment": os.getenv("RELEASE_ENV") or os.getenv("VERCEL_ENV") or "development",
     "version": app.version,
 }
 

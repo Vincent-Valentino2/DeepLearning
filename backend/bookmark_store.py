@@ -42,7 +42,7 @@ class BookmarkStore:
     def _connect(self):
         url = self._url()
         if url:
-            return psycopg2.connect(url, connect_timeout=3)
+            return psycopg2.connect(url, connect_timeout=int(os.getenv("DB_CONNECT_TIMEOUT", "3")))
         os.makedirs(os.path.dirname(self.sqlite_path), exist_ok=True)
         return sqlite3.connect(self.sqlite_path)
 

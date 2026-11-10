@@ -1,0 +1,10 @@
+{
+  "$schema": "https://openapi.vercel.sh/vercel.json",
+  "regions": ["sin1"],
+  "functions": {
+    "app.py": {
+      "maxDuration": 60,
+      "excludeFiles": "{frontend/**,output/**,docs/**,database/**,.github/**,.claude/**,backend/tests/**,backend/.venv/**,data/*.csv,data/*.db,data/movies_catalog.json}"
+    }
+  }
+}

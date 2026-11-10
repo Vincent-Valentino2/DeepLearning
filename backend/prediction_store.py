@@ -105,7 +105,7 @@ class PredictionStore:
     def _connect_pg(self):
         import psycopg2  # imported lazily: only needed when PostgreSQL is used
 
-        return psycopg2.connect(self._database_url_value(), connect_timeout=3)
+        return psycopg2.connect(self._database_url_value(), connect_timeout=int(os.getenv("DB_CONNECT_TIMEOUT", "3")))
 
     def _connect_sqlite(self):
         os.makedirs(os.path.dirname(self._sqlite_path), exist_ok=True)

@@ -1,0 +1,4 @@
+# Dependencies for the Vercel Python runtime (backend deployed from the repository root).
+# The backend's own list is the single source of truth.
+fastapi>=0.115.0
+-r backend/requirements.txt
