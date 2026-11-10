@@ -50,7 +50,7 @@ async function timedFetch(url: string, init?: RequestInit) {
 export function useEnvironmentHealth(): EnvironmentHealth {
   const [frontend, setFrontend] = useState<EnvironmentHealth['frontend']>({
     state: 'checking',
-    server: import.meta.env.DEV ? 'Vite dev server' : 'Nginx',
+    server: import.meta.env.DEV ? 'Vite dev server' : import.meta.env.VITE_FRONTEND_HOST || 'Nginx',
     port: currentPort(),
     latencyMs: null,
   })
