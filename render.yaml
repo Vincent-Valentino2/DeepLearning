@@ -1,0 +1,46 @@
+# Render Blueprint: production environment for the CD stage of .github/workflows/ci-cd.yml.
+# Render > New > Blueprint > pick this repository. It creates:
+#   tmdb-frontend  web service  (container image ghcr.io/vincent-valentino2/deeplearning-frontend)
+#   tmdb-backend   web service  (container image ghcr.io/vincent-valentino2/deeplearning-backend)
+#   tmdb-db        PostgreSQL 16 (managed database)
+# GitHub Actions publishes both images, then calls each service's deploy hook with the
+# image tagged by the commit SHA, so production always runs exactly what CI tested.
+# Setup steps: docs/DEPLOYMENT.md
+
+services:
+  - type: web
+    name: tmdb-backend
+    runtime: image
+    image:
+      url: ghcr.io/vincent-valentino2/deeplearning-backend:latest
+    plan: free
+    region: singapore
+    healthCheckPath: /api/health
+    envVars:
+      - key: DATABASE_URL
+        fromDatabase:
+          name: tmdb-db
+          property: connectionString
+      - key: RELEASE_ENV
+        value: production
+
+  - type: web
+    name: tmdb-frontend
+    runtime: image
+    image:
+      url: ghcr.io/vincent-valentino2/deeplearning-frontend:latest
+    plan: free
+    region: singapore
+    envVars:
+      # Public URL of tmdb-backend (e.g. https://tmdb-backend.onrender.com), asked once
+      # when the Blueprint is created. Nginx proxies /api to it.
+      - key: BACKEND_URL
+        sync: false
+
+databases:
+  - name: tmdb-db
+    plan: free
+    region: singapore
+    databaseName: movierec_db
+    user: deeplearning
+    postgresMajorVersion: "16"

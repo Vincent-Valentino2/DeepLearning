@@ -6,6 +6,9 @@ on:
   pull_request:
     branches: [ "main" ]
 
+permissions:
+  contents: read
+
 env:
   # Release metadata baked into both images and shown in the UI footer.
   GIT_COMMIT_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
@@ -124,23 +127,129 @@ jobs:
 
   # ==========================================
   # CONTINUOUS DEPLOYMENT (CD)
+  # Runs only for pushes to main, after every CI job above has passed.
+  #   1. publish-images : build the FE + BE images once and push them to GHCR
+  #   2. deploy-render  : tell Render to run exactly those images, then smoke-test production
   # ==========================================
-  continuous-deployment:
-    name: Automated Deployment Stage
+  publish-images:
+    name: Publish Container Images (GHCR)
     needs: [docker-build-ci]
-    runs-on: ubuntu-latest
     if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    outputs:
+      backend_image: ${{ steps.names.outputs.backend }}
+      frontend_image: ${{ steps.names.outputs.frontend }}
     steps:
       - name: Checkout Code
         uses: actions/checkout@v4
 
-      - name: Deployment Notification & Verification
+      - name: Compute image names (registry paths must be lowercase)
+        id: names
         run: |
-          echo "=========================================="
-          echo "CI checks passed! Proceeding to CD release."
-          echo "Commit: ${{ github.sha }}"
-          echo "Release Environment: ${{ env.RELEASE_ENV }}"
-          echo "Target Environment: Staging / Production Containers"
-          echo "Services: Frontend (Nginx), Backend (FastAPI), Database (Postgres)"
-          echo "=========================================="
-          echo "Containers ready for automated rollout."
+          prefix="ghcr.io/${GITHUB_REPOSITORY,,}"
+          echo "backend=${prefix}-backend" >> "$GITHUB_OUTPUT"
+          echo "frontend=${prefix}-frontend" >> "$GITHUB_OUTPUT"
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build & Push Backend Image
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          file: ./backend/Dockerfile
+          push: true
+          tags: |
+            ${{ steps.names.outputs.backend }}:${{ github.sha }}
+            ${{ steps.names.outputs.backend }}:latest
+          labels: org.opencontainers.image.source=https://github.com/${{ github.repository }}
+          build-args: |
+            GIT_COMMIT_SHA=${{ env.GIT_COMMIT_SHA }}
+            RELEASE_ENV=${{ env.RELEASE_ENV }}
+
+      - name: Build & Push Frontend Image
+        uses: docker/build-push-action@v5
+        with:
+          context: ./frontend
+          file: ./frontend/Dockerfile
+          push: true
+          tags: |
+            ${{ steps.names.outputs.frontend }}:${{ github.sha }}
+            ${{ steps.names.outputs.frontend }}:latest
+          labels: org.opencontainers.image.source=https://github.com/${{ github.repository }}
+          build-args: |
+            GIT_COMMIT_SHA=${{ env.GIT_COMMIT_SHA }}
+            RELEASE_ENV=${{ env.RELEASE_ENV }}
+
+  deploy-render:
+    name: Deploy to Production (Render)
+    needs: [publish-images]
+    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+    runs-on: ubuntu-latest
+    # Serialize production deploys; a newer push waits for the running one instead of racing it.
+    concurrency:
+      group: production
+      cancel-in-progress: false
+    environment:
+      name: production
+      url: ${{ vars.PRODUCTION_URL }}
+    env:
+      BACKEND_IMAGE: ${{ needs.publish-images.outputs.backend_image }}:${{ github.sha }}
+      FRONTEND_IMAGE: ${{ needs.publish-images.outputs.frontend_image }}:${{ github.sha }}
+      BACKEND_HOOK: ${{ secrets.RENDER_DEPLOY_HOOK_BACKEND }}
+      FRONTEND_HOOK: ${{ secrets.RENDER_DEPLOY_HOOK_FRONTEND }}
+      BACKEND_URL: ${{ vars.BACKEND_URL }}
+      PRODUCTION_URL: ${{ vars.PRODUCTION_URL }}
+    steps:
+      - name: Check deployment configuration
+        id: cfg
+        run: |
+          missing=""
+          for v in BACKEND_HOOK FRONTEND_HOOK BACKEND_URL PRODUCTION_URL; do
+            [ -n "${!v}" ] || missing="$missing $v"
+          done
+          if [ -n "$missing" ]; then
+            echo "::warning::Render deployment is not configured (missing:$missing). Images were published to GHCR; see docs/DEPLOYMENT.md."
+            echo "ready=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "ready=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Trigger Render deploys with the images built from this commit
+        if: steps.cfg.outputs.ready == 'true'
+        run: |
+          set -euo pipefail
+          enc() { python3 -c 'import sys, urllib.parse; print(urllib.parse.quote(sys.argv[1], safe=""))' "$1"; }
+          echo "Backend  <- $BACKEND_IMAGE"
+          curl -fsS -X POST "${BACKEND_HOOK}&imgURL=$(enc "$BACKEND_IMAGE")" > /dev/null
+          echo "Frontend <- $FRONTEND_IMAGE"
+          curl -fsS -X POST "${FRONTEND_HOOK}&imgURL=$(enc "$FRONTEND_IMAGE")" > /dev/null
+
+      - name: Smoke test production (waits for the new release to go live)
+        if: steps.cfg.outputs.ready == 'true'
+        timeout-minutes: 20
+        run: |
+          set -uo pipefail
+          # 1. Backend reports this commit in /api/health (free instances may need a cold start)
+          until curl -fsS "$BACKEND_URL/api/health" -o health.json 2>/dev/null &&
+                python3 -c "import json,os,sys; r=json.load(open('health.json'))['release']; sys.exit(r['commit_sha']!=os.environ['GITHUB_SHA'])"; do
+            echo "waiting for backend release ${GITHUB_SHA::7}..."; sleep 20
+          done
+          python3 -m json.tool health.json
+          # 2. Frontend bundle carries this commit and its Nginx proxy reaches the new backend
+          until bundle=$(curl -fsS "$PRODUCTION_URL/" | grep -o '/assets/index-[^"]*\.js' | head -1) &&
+                curl -fsS "$PRODUCTION_URL$bundle" | grep -q "$GITHUB_SHA"; do
+            echo "waiting for frontend release ${GITHUB_SHA::7}..."; sleep 20
+          done
+          curl -fsS "$PRODUCTION_URL/api/health" | python3 -c "import json,os,sys; d=json.load(sys.stdin); assert d['release']['commit_sha']==os.environ['GITHUB_SHA'], d['release']; assert d['model_loaded']; print('Production OK:', d['status'], '| database connected:', d['database']['connected'])"
+          echo "### Deployed ${GITHUB_SHA::7} to $PRODUCTION_URL" >> "$GITHUB_STEP_SUMMARY"

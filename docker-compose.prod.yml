@@ -1,0 +1,70 @@
+# Production compose: runs the images that CI/CD published to GHCR instead of building
+# from source, so any Docker host can deploy a tested release in seconds:
+#
+#   docker compose -f docker-compose.prod.yml pull
+#   docker compose -f docker-compose.prod.yml up -d
+#
+# Pin a release with TAG=<commit sha> (default: latest).
+
+services:
+  frontend:
+    image: ghcr.io/vincent-valentino2/deeplearning-frontend:${TAG:-latest}
+    container_name: movie_frontend
+    restart: unless-stopped
+    ports:
+      - "3000:80"
+    depends_on:
+      backend:
+        condition: service_healthy
+    networks:
+      - app_network
+
+  backend:
+    image: ghcr.io/vincent-valentino2/deeplearning-backend:${TAG:-latest}
+    container_name: movie_backend
+    restart: unless-stopped
+    ports:
+      - "8001:8001"
+    environment:
+      - DATABASE_URL=postgresql://deeplearning:deeplearning_secret@database:5432/movierec_db
+      - PORT=8001
+    depends_on:
+      database:
+        condition: service_healthy
+    volumes:
+      - ./data:/app/data
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8001/api/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+    networks:
+      - app_network
+
+  database:
+    image: postgres:16-alpine
+    container_name: movie_postgres_db
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: deeplearning
+      POSTGRES_PASSWORD: deeplearning_secret
+      POSTGRES_DB: movierec_db
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      - ./database/init.sql:/docker-entrypoint-initdb.d/init.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U deeplearning -d movierec_db"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 5s
+    networks:
+      - app_network
+
+volumes:
+  pgdata:
+
+networks:
+  app_network:
+    driver: bridge

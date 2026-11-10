@@ -198,7 +198,7 @@ class MoviePredictionResponse(BaseModel):
     is_popular: bool
     probability: float  # 0.0 to 1.0
     threshold_percentile: str  # "Top 25% (75th Percentile TMDB Popularity Threshold)"
-    confidence_level: str  # "High", "Moderate", "Standard"
+    confidence_level: str  # "High", "Moderate", "Low (Borderline)"
     model_architecture: str  # "Multi-Layer Perceptron (MLP)"
     input_features: dict
     feature_insights: List[str]

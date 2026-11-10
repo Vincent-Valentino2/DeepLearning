@@ -24,7 +24,10 @@ ENV GIT_COMMIT_SHA=$GIT_COMMIT_SHA \
 
 EXPOSE 8001
 
-HEALTHCHECK --interval=30s --timeout=5s --start-period=5s --retries=3 \
-  CMD curl -f http://localhost:8001/api/health || exit 1
+# PORT defaults to 8001 (docker compose); a cloud host may inject its own PORT
+ENV PORT=8001
 
-CMD ["python", "-m", "uvicorn", "backend.main:app", "--host", "0.0.0.0", "--port", "8001"]
+HEALTHCHECK --interval=30s --timeout=5s --start-period=5s --retries=3 \
+  CMD curl -f http://localhost:${PORT}/api/health || exit 1
+
+CMD ["sh", "-c", "exec python -m uvicorn backend.main:app --host 0.0.0.0 --port ${PORT}"]

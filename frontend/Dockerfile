@@ -26,8 +26,12 @@ FROM nginx:alpine
 # Copy built assets to Nginx html directory
 COPY --from=builder /app/dist /usr/share/nginx/html
 
-# Copy custom Nginx configuration
-COPY nginx.conf /etc/nginx/conf.d/default.conf
+# Nginx config template: the image renders it with envsubst at start-up
+COPY nginx.conf.template /etc/nginx/templates/default.conf.template
+
+# Defaults for docker compose; the cloud host overrides them at run time
+ENV PORT=80 \
+    BACKEND_URL=http://backend:8001
 
 EXPOSE 80
 
