@@ -21,7 +21,7 @@ Each app layer has a dedicated directory and Docker Compose service. This keeps 
 .
 ├── frontend/          # React, TypeScript, Vite, and Nginx
 ├── backend/           # FastAPI API, prediction model, and backend Dockerfile
-├── database/          # PostgreSQL initialization SQL
+├── database/          # PostgreSQL image (Dockerfile) and initialization SQL
 ├── data/              # Sample data and local movie catalog files
 ├── docker-compose.yml # Runs the app services together
 └── README.md
@@ -37,7 +37,7 @@ Browser ──> frontend (Nginx, port 3000)
             database (PostgreSQL, port 5432)
 ```
 
-The frontend, backend, and database are separate containers. Compose connects them on a private network. PostgreSQL data is stored in a named Docker volume, while backend catalog and local SQLite files are kept in the host `data/` directory. The SQL in `database/init.sql` runs when PostgreSQL first initializes its data directory.
+The frontend, backend, and database are separate containers. Compose connects them on a private network. PostgreSQL data is stored in a named Docker volume, while backend catalog and local SQLite files are kept in the host `data/` directory. The database image (`database/Dockerfile`) bakes in `database/init.sql`, which runs when PostgreSQL first initializes its data directory.
 
 ## What you need
 
@@ -129,9 +129,9 @@ Open <http://localhost:5174>. Vite proxies `/api` calls to the backend on port `
 | --- | --- | --- |
 | Frontend | `frontend/` | Movie browsing, prediction forms, comparison, history, and watchlist UI |
 | Backend | `backend/` | FastAPI endpoints, model inference, movie search, and application logic |
-| Database | `database/` | PostgreSQL schema initialization; persistent database files are managed by Docker volume `pgdata` |
+| Database | `database/` | PostgreSQL 16 image with the schema baked in; persistent database files are managed by Docker volume `pgdata` |
 
-Compose service names are `frontend`, `backend`, and `database`. Rebuild the frontend or backend with `docker compose up --build -d <service>` after changing its code. PostgreSQL uses the official image; its initialization script only runs when the data volume is first created.
+Compose service names are `frontend`, `backend`, and `database`. Rebuild the frontend or backend with `docker compose up --build -d <service>` after changing its code. The database image extends the official `postgres:16-alpine`; its initialization script only runs when the data volume is first created.
 
 ## Model training and evaluation
 
@@ -167,10 +167,10 @@ The footer shows the commit the frontend was built from (linked to GitHub), the 
 
 1. **Frontend Lint & Build Check**: typecheck and production build
 2. **Backend Syntax & Health Verification**: import check and backend unit tests
-3. **Docker Multi-Container Build Verification**: builds both images, starts all three containers with Compose, and checks that the frontend, `/api/health`, and PostgreSQL are reachable
-4. **Publish Container Images (GHCR)**: pushes to `main` only; pushes the frontend and backend images tagged with the commit SHA and `latest`
-5. **Deploy to Production (Render)**: pushes to `main` only; deploys those exact images to Render and waits until production reports the new commit
+3. **Docker Multi-Container Build Verification**: builds the frontend, backend, and database images, starts all three containers with Compose, and checks that the frontend, `/api/health`, and PostgreSQL are reachable
+4. **Publish Container Images (GHCR)**: pushes to `main` only; pushes the frontend, backend, and database images tagged with the commit SHA and `latest`
+5. **Deploy to Production Server (Docker)**: pushes to `main` only; a self-hosted runner on the server pulls those exact images, restarts the stack with `docker-compose.prod.yml`, and smoke-tests it. Only images reach the server, never source code
 
 `main` is protected: changes go through a pull request, and checks 1-3 must pass before merging.
 
-Production setup, rollback, and running the published images with `docker-compose.prod.yml` are described in [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md).
+Server setup, rollback, and running the published images manually are described in [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md).

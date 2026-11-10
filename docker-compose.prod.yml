@@ -1,58 +1,58 @@
-# Production compose: runs the images that CI/CD published to GHCR instead of building
-# from source, so any Docker host can deploy a tested release in seconds:
+# Production stack: runs the three images CI/CD published to GHCR. Nothing is built on
+# the server and no source code is needed there; this file is the only thing it uses.
 #
-#   docker compose -f docker-compose.prod.yml pull
-#   docker compose -f docker-compose.prod.yml up -d
+#   TAG=<commit sha> docker compose -p tmdb-prod -f docker-compose.prod.yml pull
+#   TAG=<commit sha> docker compose -p tmdb-prod -f docker-compose.prod.yml up -d --wait
 #
-# Pin a release with TAG=<commit sha> (default: latest).
+# The CD job (.github/workflows/ci-cd.yml, "Deploy to Production Server") runs exactly
+# this on the server's self-hosted runner. TAG defaults to latest.
+#
+# Optional settings (environment or a .env file next to this file):
+#   FRONTEND_PORT      host port of the app (default 3000)
+#   POSTGRES_PASSWORD  database password (default deeplearning_secret; change it on real servers)
+
+name: tmdb-prod
 
 services:
+  # Container 1: Frontend (React build served by Nginx; proxies /api to the backend)
   frontend:
     image: ghcr.io/vincent-valentino2/deeplearning-frontend:${TAG:-latest}
-    container_name: movie_frontend
     restart: unless-stopped
     ports:
-      - "3000:80"
+      - "${FRONTEND_PORT:-3000}:80"
     depends_on:
       backend:
         condition: service_healthy
     networks:
       - app_network
 
+  # Container 2: Backend (FastAPI + MLP model + compact movie catalog, all inside the image)
   backend:
     image: ghcr.io/vincent-valentino2/deeplearning-backend:${TAG:-latest}
-    container_name: movie_backend
     restart: unless-stopped
-    ports:
-      - "8001:8001"
     environment:
-      - DATABASE_URL=postgresql://deeplearning:deeplearning_secret@database:5432/movierec_db
+      - DATABASE_URL=postgresql://deeplearning:${POSTGRES_PASSWORD:-deeplearning_secret}@database:5432/movierec_db
       - PORT=8001
     depends_on:
       database:
         condition: service_healthy
-    volumes:
-      - ./data:/app/data
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8001/api/health"]
       interval: 10s
       timeout: 5s
       retries: 5
-      start_period: 10s
+      start_period: 15s
     networks:
       - app_network
 
+  # Container 3: Database (PostgreSQL 16 with the schema baked into the image)
   database:
-    image: postgres:16-alpine
-    container_name: movie_postgres_db
+    image: ghcr.io/vincent-valentino2/deeplearning-database:${TAG:-latest}
     restart: unless-stopped
     environment:
-      POSTGRES_USER: deeplearning
-      POSTGRES_PASSWORD: deeplearning_secret
-      POSTGRES_DB: movierec_db
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-deeplearning_secret}
     volumes:
       - pgdata:/var/lib/postgresql/data
-      - ./database/init.sql:/docker-entrypoint-initdb.d/init.sql:ro
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U deeplearning -d movierec_db"]
       interval: 10s
@@ -62,6 +62,8 @@ services:
     networks:
       - app_network
 
+# Only the frontend publishes a port; the backend and database are reachable only on
+# the private network, the same way Nginx reaches the backend in development.
 volumes:
   pgdata:
 
