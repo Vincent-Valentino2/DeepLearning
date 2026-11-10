@@ -75,6 +75,39 @@ If the database password is set after the first deploy, the existing volume keep
 password. Set it before the first deploy, or remove the volume (`docker volume rm tmdb-prod_pgdata`,
 which deletes the data).
 
+## Example: your own laptop as the server (macOS, Docker Desktop)
+
+The simplest setup for a demo: the laptop runs the production stack, and GitHub Actions
+deploys to it through a runner on the same laptop.
+
+1. **Install Docker Desktop** and start it once (whale icon in the menu bar):
+   - Apple Silicon: https://desktop.docker.com/mac/main/arm64/Docker.dmg
+   - Intel: https://desktop.docker.com/mac/main/amd64/Docker.dmg
+   - Check in a terminal: `docker compose version`
+2. **Install the runner.** Repository > Settings > Actions > Runners > **New self-hosted runner** >
+   **macOS** > **ARM64** (or x64 on Intel). Run the commands shown there in a new folder,
+   e.g. `~/actions-runner`. When `./config.sh` asks:
+   - runner group / name: press Enter (defaults are fine)
+   - **additional labels: `production`**
+   - work folder: press Enter
+3. **Start the runner** whenever you want deployments to happen (keep the terminal open):
+   ```bash
+   cd ~/actions-runner && ./run.sh
+   ```
+   It prints `Listening for Jobs`. Docker Desktop must be running too.
+4. **Repository settings:** `DEPLOY_SERVER_ENABLED=true` and `FRONTEND_PORT=8080`
+   (8080 keeps the production stack apart from the development stack on 3000);
+   optionally `PRODUCTION_URL=http://localhost:8080` and a `POSTGRES_PASSWORD` secret.
+5. **Deploy:** merge to `main`, or Actions > the latest run on `main` > Re-run all jobs.
+   The runner terminal shows the job; the app is then at http://localhost:8080.
+
+Check the running release on the laptop:
+
+```bash
+docker compose -p tmdb-prod ps          # 3 containers, images ghcr.io/...:<sha>
+curl http://localhost:8080/api/health   # release.commit_sha = the deployed commit
+```
+
 ## Example: free VPS on Oracle Cloud (Always Free, ARM)
 
 Oracle Cloud's Always Free tier includes Ampere A1 (ARM) instances, enough for all three
