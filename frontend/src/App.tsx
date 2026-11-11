@@ -740,7 +740,7 @@ export default function App() {
   return (
     <div className="min-h-screen bg-[#f8f7f4] text-[#1c1917] selection:bg-[#1c1917] selection:text-white font-sans antialiased">
       {/* Editorial Masthead */}
-      <header className="border-b border-[#e5e2da] bg-white sticky top-0 z-40">
+      <header className="border-b border-[#e5e2da] bg-blue-400 sticky top-0 z-40">
         <div className="max-w-7xl mx-auto px-6 h-16 flex items-center justify-between">
           <div className="flex items-center gap-3">
             <div className="w-7 h-7 rounded border border-[#1c1917] bg-[#1c1917] text-white flex items-center justify-center font-serif text-sm font-bold">
