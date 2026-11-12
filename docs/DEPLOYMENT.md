@@ -1,7 +1,7 @@
-# Production deployment with containers (GHCR + self-hosted runner)
+# Production deployment with containers (GHCR + Watchtower)
 
 Production runs the three container images that CI built and tested. The server never
-receives or builds source code: it pulls images from GitHub Container Registry (GHCR)
+receives or builds source code: it pulls public images from the GitHub Container Registry (GHCR)
 and starts them with `docker-compose.prod.yml`.
 
 ```text
@@ -13,7 +13,13 @@ push to main only ────────────────────�
                                                      ghcr.io/vincent-valentino2/deeplearning-frontend:<sha>
                                                      ghcr.io/vincent-valentino2/deeplearning-backend:<sha>
                                                      ghcr.io/vincent-valentino2/deeplearning-database:<sha>
-                                                  5. Deploy to Production Server (self-hosted runner)
+                                                     then all three :latest -> <sha> together
+                                                        │
+                                                        ├─> Watchtower on the server sees the new
+                                                        │   :latest within a minute, pulls it and
+                                                        │   recreates the containers (no runner needed)
+                                                        │
+                                                  5. (optional) Deploy to Production Server (self-hosted runner)
                                                      docker compose pull  (TAG=<sha>)
                                                      docker compose up -d --wait
                                                      smoke test: /api/health reports <sha>, DB connected
@@ -34,6 +40,47 @@ Each is tagged with the commit SHA (an immutable release) and `latest`, and buil
 `linux/amd64` and `linux/arm64`, so the same tag runs on Intel/AMD servers, ARM servers such as
 Oracle Cloud Ampere, and Apple Silicon laptops.
 
+## Automatic updates with Watchtower
+
+This is the simplest way to keep a server current: every push to `main` that passes CI
+publishes new images, and the server updates itself. No runner, SSH key or open port is needed.
+
+No secrets are needed: the publish job logs in to GHCR with the workflow's own
+`GITHUB_TOKEN`, and the three packages are **public**, so the server pulls them without logging in.
+If you create a fork, make its packages public too (GitHub profile > Packages > package >
+Package settings > Change visibility).
+
+1. **Start the stack on the server once**, with the tag left at `latest`:
+   ```bash
+   curl -fsSLO https://raw.githubusercontent.com/Vincent-Valentino2/DeepLearning/main/docker-compose.prod.yml
+   docker compose -f docker-compose.prod.yml up -d --wait
+   ```
+   Put `FRONTEND_PORT` and `POSTGRES_PASSWORD` in a `.env` file next to the compose file so
+   later commands pick them up too.
+2. **Push to `main`.** After CI passes and the publish job finishes, Watchtower notices the new
+   `latest` (it checks every `WATCHTOWER_POLL_INTERVAL` seconds, default 60), pulls the images and
+   recreates the frontend, backend and database containers one at a time. The database volume is
+   kept. Watch it happen:
+   ```bash
+   docker compose -p tmdb-prod logs -f watchtower
+   curl http://localhost:3000/api/health   # release.commit_sha changes to the new commit
+   ```
+
+How it fits together:
+
+- CI pushes `:<sha>` for all three images first and only then moves `:latest`, so Watchtower never
+  runs a new frontend against an old backend mid-publish.
+- Watchtower only touches containers labelled `com.centurylinklabs.watchtower.enable=true` (the
+  three app containers), not the development stack or anything else on the machine.
+- The compose file uses `nickfedor/watchtower`, the maintained fork. The original
+  `containrrr/watchtower` image is archived and fails on Docker Engine 29+ with
+  "client version 1.25 is too old".
+- A stack started with `TAG=<sha>` (the runner deploy or a rollback) is pinned; that tag never
+  moves, so Watchtower leaves it alone. Use one mode per server: either Watchtower (`TAG` unset,
+  `DEPLOY_SERVER_ENABLED` unset) or the runner deploy below.
+- Private images: run `docker login` on the server and add
+  `- ~/.docker/config.json:/config.json:ro` to the watchtower service's volumes.
+
 ## Why a self-hosted runner
 
 The deploy job runs on a GitHub Actions runner installed on the server itself. The runner
@@ -46,16 +93,13 @@ public IP, and no SSH keys or open ports are needed. The job fetches only
 Requirements: Docker with the Compose plugin (Docker Desktop on macOS/Windows), `curl`,
 `python3`, and outbound internet access.
 
-1. **Make the images public** (once, after the first push to `main` publishes them):
-   GitHub > profile > Packages > each `deeplearning-*` package > Package settings >
-   Change visibility > Public. The server can then pull without a registry login.
-2. **Install the runner.** Repository > Settings > Actions > Runners > **New self-hosted runner**.
+1. **Install the runner.** Repository > Settings > Actions > Runners > **New self-hosted runner**.
    Pick the server's OS and run the commands GitHub shows. When `config.sh` asks for labels,
    enter **`production`**.
    - Linux: run it as a service (`sudo ./svc.sh install && sudo ./svc.sh start`) and make sure the
      runner user can use Docker (`sudo usermod -aG docker <user>`, then log in again).
    - macOS laptop: start it with `./run.sh` in a terminal while Docker Desktop is running.
-3. **Enable deployments.** Repository > Settings > Secrets and variables > Actions:
+2. **Enable deployments.** Repository > Settings > Secrets and variables > Actions:
 
    | Kind | Name | Value |
    | --- | --- | --- |
@@ -64,11 +108,11 @@ Requirements: Docker with the Compose plugin (Docker Desktop on macOS/Windows), 
    | Variable | `PRODUCTION_URL` | optional, link shown on the run, e.g. `http://<server-ip>:3000` |
    | Secret | `POSTGRES_PASSWORD` | optional, database password (default `deeplearning_secret`) |
 
-4. **Protect the runner.** This repository is public. Under Settings > Actions > General >
+3. **Protect the runner.** This repository is public. Under Settings > Actions > General >
    *Fork pull request workflows from outside collaborators*, choose **Require approval for all
    outside collaborators**, so nobody can run code on your server from a fork. The deploy job
    itself only runs for pushes to `main`.
-5. **Deploy.** Merge to `main` (or re-run the latest workflow on `main`). Watch the
+4. **Deploy.** Merge to `main` (or re-run the latest workflow on `main`). Watch the
    **Deploy to Production Server** job; its summary lists the running containers and image tags.
 
 If the database password is set after the first deploy, the existing volume keeps the old
@@ -104,7 +148,7 @@ deploys to it through a runner on the same laptop.
 Check the running release on the laptop:
 
 ```bash
-docker compose -p tmdb-prod ps          # 3 containers, images ghcr.io/...:<sha>
+docker compose -p tmdb-prod ps          # 3 containers, images ghcr.io/vincent-valentino2/...:<sha>
 curl http://localhost:8080/api/health   # release.commit_sha = the deployed commit
 ```
 
@@ -134,7 +178,7 @@ Always Free page for the current numbers before creating the instance.
    sudo usermod -aG docker ubuntu   # then log out and back in
    docker compose version
    ```
-4. **Install the runner** as in step 2 of the one-time setup: choose **Linux** and **ARM64** on
+4. **Install the runner** as in step 1 of the one-time setup: choose **Linux** and **ARM64** on
    GitHub's "New self-hosted runner" page, enter the label `production`, then run it as a service:
    ```bash
    sudo ./svc.sh install ubuntu && sudo ./svc.sh start
@@ -150,13 +194,13 @@ use the runner build that matches the server's CPU (x64 or ARM64).
 ## Checking a release
 
 - On the server: `docker compose -p tmdb-prod ps` shows three containers running
-  `ghcr.io/...:<sha>` images.
+  `ghcr.io/vincent-valentino2/...:<sha>` images.
 - `http://<server>:3000/api/health` reports `release.commit_sha`, `model_loaded`, and the database.
 - The app footer shows the commit the frontend image was built from.
 
 ## Rolling back
 
-Every release stays in GHCR under its commit SHA. Re-run the workflow of an older green commit
+Every release stays on GHCR under its commit SHA. Re-run the workflow of an older green commit
 on `main` (Actions > run > Re-run all jobs): the deploy job pulls that commit's images and
 restarts the stack. Manually on the server:
 

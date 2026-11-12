@@ -129,9 +129,12 @@ jobs:
   # CONTINUOUS DEPLOYMENT (CD)
   # Runs only for pushes to main, after every CI job above has passed.
   #   1. publish-images : build the FE, BE and DB images once and push them to GHCR
-  #   2. deploy-server  : on the production server's self-hosted runner, pull exactly those
-  #                       images (tag = commit SHA), restart the stack, and smoke-test it.
-  #                       Only images and docker-compose.prod.yml reach the server, never source code.
+  #                       (ghcr.io/<owner>/deeplearning-{frontend,backend,database}).
+  #                       Each image gets an immutable <sha> tag; once all three are pushed,
+  #                       "latest" is moved to them together, which is what Watchtower follows.
+  #   2. deploy-server  : (optional) on the production server's self-hosted runner, pull exactly
+  #                       those images (tag = commit SHA), restart the stack, and smoke-test it.
+  #                       Servers running Watchtower need no runner: they pick up "latest" themselves.
   # ==========================================
   publish-images:
     name: Publish Container Images (GHCR)
@@ -141,10 +144,6 @@ jobs:
     permissions:
       contents: read
       packages: write
-    outputs:
-      backend_image: ${{ steps.names.outputs.backend }}
-      frontend_image: ${{ steps.names.outputs.frontend }}
-      database_image: ${{ steps.names.outputs.database }}
     steps:
       - name: Checkout Code
         uses: actions/checkout@v4
@@ -152,10 +151,11 @@ jobs:
       - name: Compute image names (registry paths must be lowercase)
         id: names
         run: |
-          prefix="ghcr.io/${GITHUB_REPOSITORY,,}"
-          echo "backend=${prefix}-backend" >> "$GITHUB_OUTPUT"
-          echo "frontend=${prefix}-frontend" >> "$GITHUB_OUTPUT"
-          echo "database=${prefix}-database" >> "$GITHUB_OUTPUT"
+          repo="ghcr.io/${GITHUB_REPOSITORY,,}"
+          echo "repo=$repo" >> "$GITHUB_OUTPUT"
+          for svc in backend frontend database; do
+            echo "${svc}=${repo}-${svc}" >> "$GITHUB_OUTPUT"
+          done
 
       # arm64 images run on ARM servers (e.g. Oracle Cloud Ampere) and Apple Silicon
       - name: Set up QEMU (multi-architecture builds)
@@ -178,9 +178,7 @@ jobs:
           file: ./backend/Dockerfile
           push: true
           platforms: linux/amd64,linux/arm64
-          tags: |
-            ${{ steps.names.outputs.backend }}:${{ github.sha }}
-            ${{ steps.names.outputs.backend }}:latest
+          tags: ${{ steps.names.outputs.backend }}:${{ github.sha }}
           labels: org.opencontainers.image.source=https://github.com/${{ github.repository }}
           build-args: |
             GIT_COMMIT_SHA=${{ env.GIT_COMMIT_SHA }}
@@ -193,9 +191,7 @@ jobs:
           file: ./frontend/Dockerfile
           push: true
           platforms: linux/amd64,linux/arm64
-          tags: |
-            ${{ steps.names.outputs.frontend }}:${{ github.sha }}
-            ${{ steps.names.outputs.frontend }}:latest
+          tags: ${{ steps.names.outputs.frontend }}:${{ github.sha }}
           labels: org.opencontainers.image.source=https://github.com/${{ github.repository }}
           build-args: |
             GIT_COMMIT_SHA=${{ env.GIT_COMMIT_SHA }}
@@ -208,10 +204,23 @@ jobs:
           file: ./database/Dockerfile
           push: true
           platforms: linux/amd64,linux/arm64
-          tags: |
-            ${{ steps.names.outputs.database }}:${{ github.sha }}
-            ${{ steps.names.outputs.database }}:latest
+          tags: ${{ steps.names.outputs.database }}:${{ github.sha }}
           labels: org.opencontainers.image.source=https://github.com/${{ github.repository }}
+
+      # Only now, with all three images pushed, move "latest". Watchtower therefore never sees
+      # a new frontend paired with an old backend halfway through a publish.
+      - name: Promote this release to latest
+        env:
+          REPO: ${{ steps.names.outputs.repo }}
+        run: |
+          set -euo pipefail
+          for svc in backend frontend database; do
+            docker buildx imagetools create -t "${REPO}-${svc}:latest" "${REPO}-${svc}:${GITHUB_SHA}"
+          done
+          {
+            echo "### Published ${GITHUB_SHA::7} to GHCR as latest"
+            for svc in frontend backend database; do echo "- \`${REPO}-${svc}:latest\`"; done
+          } >> "$GITHUB_STEP_SUMMARY"
 
   deploy-server:
     name: Deploy to Production Server (Docker)
